@@ -1,0 +1,442 @@
+{
+    "load": {
+        "recordcount": [
+            100000,
+            100000,
+            100000,
+            100000
+        ],
+        "operationcount": 500000,
+        "fieldcount": 16,
+        "fieldlength": 512,
+        "rocksdb.num_cfs": 4,
+        "target_rates": [
+            20,
+            1000,
+            1000,
+            1000
+        ],
+        "read_rate_limits": [
+            500,
+            500,
+            500,
+            500
+        ],
+        "rocksdb.cache_size": [
+            41943040,
+            10485760,
+            10485760,
+            10485760
+        ],
+        "io_read_capacity_kbps": 2048000,
+        "rsched": false,
+        "refill_period": 5,
+        "rsched_interval_ms": 50,
+        "lookback_intervals": 30,
+        "rsched_rampup_multiplier": "1.2",
+        "burst_gap_s": 0,
+        "burst_size_ops": 1,
+        "io_write_capacity_kbps": 10,
+        "memtable_capacity_kb": 10,
+        "max_memtable_size_kb": 10,
+        "min_memtable_size_kb": 10,
+        "min_memtable_count": 1,
+        "client_to_cf_map": [
+            "default",
+            "cf1",
+            "cf2",
+            "cf3"
+        ],
+        "client_to_cf_offset": [
+            0,
+            0,
+            0,
+            0
+        ],
+        "rocksdb.disable_auto_compactions": true,
+        "rocksdb.compression_per_level": [
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression"
+        ],
+        "rocksdb.max_write_buffer_number": [
+            20,
+            20,
+            20,
+            20
+        ],
+        "rocksdb.min_write_buffer_number_to_merge": [
+            1,
+            1,
+            1,
+            1
+        ],
+        "rocksdb.write_buffer_size": [
+            67108864,
+            67108864,
+            67108864,
+            67108864
+        ],
+        "fairdb_use_pooled": false,
+        "fairdb_reserved_space": 0,
+        "requestdistribution": [
+            "uniform",
+            "uniform",
+            "uniform",
+            "uniform"
+        ]
+    },
+    "isolation_run": {
+        "recordcount": [
+            1280,
+            100000,
+            100000,
+            100000
+        ],
+        "operationcount": 500000,
+        "fieldcount": 16,
+        "fieldlength": 512,
+        "rocksdb.num_cfs": 4,
+        "target_rates": [
+            20,
+            1000,
+            1000,
+            1000
+        ],
+        "read_rate_limits": [
+            500,
+            500,
+            500,
+            500
+        ],
+        "rocksdb.cache_size": [
+            41943040,
+            10485760,
+            10485760,
+            10485760
+        ],
+        "io_read_capacity_kbps": 2048000,
+        "rsched": false,
+        "refill_period": 5,
+        "rsched_interval_ms": 50,
+        "lookback_intervals": 30,
+        "rsched_rampup_multiplier": "1.2",
+        "burst_gap_s": 0,
+        "burst_size_ops": 1,
+        "io_write_capacity_kbps": 10,
+        "memtable_capacity_kb": 10,
+        "max_memtable_size_kb": 10,
+        "min_memtable_size_kb": 10,
+        "min_memtable_count": 1,
+        "client_to_cf_map": [
+            "default",
+            "cf1",
+            "cf2",
+            "cf3"
+        ],
+        "client_to_cf_offset": [
+            0,
+            0,
+            0,
+            0
+        ],
+        "rocksdb.disable_auto_compactions": true,
+        "rocksdb.compression_per_level": [
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression"
+        ],
+        "rocksdb.max_write_buffer_number": [
+            20,
+            20,
+            20,
+            20
+        ],
+        "rocksdb.min_write_buffer_number_to_merge": [
+            1,
+            1,
+            1,
+            1
+        ],
+        "rocksdb.write_buffer_size": [
+            67108864,
+            67108864,
+            67108864,
+            67108864
+        ],
+        "fairdb_use_pooled": false,
+        "fairdb_reserved_space": 0,
+        "requestdistribution": [
+            "uniform",
+            "uniform",
+            "uniform",
+            "uniform"
+        ]
+    },
+    "fairdb_pooled_run": {
+        "recordcount": [
+            1280,
+            100000,
+            100000,
+            100000
+        ],
+        "operationcount": 500000,
+        "fieldcount": 16,
+        "fieldlength": 512,
+        "rocksdb.num_cfs": 4,
+        "target_rates": [
+            20,
+            1000,
+            1000,
+            1000
+        ],
+        "read_rate_limits": [
+            500,
+            500,
+            500,
+            500
+        ],
+        "rocksdb.cache_size": [
+            41943040,
+            10485760,
+            10485760,
+            10485760
+        ],
+        "io_read_capacity_kbps": 2048000,
+        "rsched": false,
+        "refill_period": 5,
+        "rsched_interval_ms": 50,
+        "lookback_intervals": 30,
+        "rsched_rampup_multiplier": "1.2",
+        "burst_gap_s": 0,
+        "burst_size_ops": 1,
+        "io_write_capacity_kbps": 10,
+        "memtable_capacity_kb": 10,
+        "max_memtable_size_kb": 10,
+        "min_memtable_size_kb": 10,
+        "min_memtable_count": 1,
+        "client_to_cf_map": [
+            "default",
+            "cf1",
+            "cf2",
+            "cf3"
+        ],
+        "client_to_cf_offset": [
+            0,
+            0,
+            0,
+            0
+        ],
+        "rocksdb.disable_auto_compactions": true,
+        "rocksdb.compression_per_level": [
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression"
+        ],
+        "rocksdb.max_write_buffer_number": [
+            20,
+            20,
+            20,
+            20
+        ],
+        "rocksdb.min_write_buffer_number_to_merge": [
+            1,
+            1,
+            1,
+            1
+        ],
+        "rocksdb.write_buffer_size": [
+            67108864,
+            67108864,
+            67108864,
+            67108864
+        ],
+        "fairdb_use_pooled": true,
+        "fairdb_reserved_space": 0,
+        "requestdistribution": [
+            "uniform",
+            "uniform",
+            "uniform",
+            "uniform"
+        ]
+    },
+    "fairdb_half_run": {
+        "recordcount": [
+            1280,
+            100000,
+            100000,
+            100000
+        ],
+        "operationcount": 500000,
+        "fieldcount": 16,
+        "fieldlength": 512,
+        "rocksdb.num_cfs": 4,
+        "target_rates": [
+            20,
+            1000,
+            1000,
+            1000
+        ],
+        "read_rate_limits": [
+            500,
+            500,
+            500,
+            500
+        ],
+        "rocksdb.cache_size": [
+            41943040,
+            10485760,
+            10485760,
+            10485760
+        ],
+        "io_read_capacity_kbps": 2048000,
+        "rsched": false,
+        "refill_period": 5,
+        "rsched_interval_ms": 50,
+        "lookback_intervals": 30,
+        "rsched_rampup_multiplier": "1.2",
+        "burst_gap_s": 0,
+        "burst_size_ops": 1,
+        "io_write_capacity_kbps": 10,
+        "memtable_capacity_kb": 10,
+        "max_memtable_size_kb": 10,
+        "min_memtable_size_kb": 10,
+        "min_memtable_count": 1,
+        "client_to_cf_map": [
+            "default",
+            "cf1",
+            "cf2",
+            "cf3"
+        ],
+        "client_to_cf_offset": [
+            0,
+            0,
+            0,
+            0
+        ],
+        "rocksdb.disable_auto_compactions": true,
+        "rocksdb.compression_per_level": [
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression"
+        ],
+        "rocksdb.max_write_buffer_number": [
+            20,
+            20,
+            20,
+            20
+        ],
+        "rocksdb.min_write_buffer_number_to_merge": [
+            1,
+            1,
+            1,
+            1
+        ],
+        "rocksdb.write_buffer_size": [
+            67108864,
+            67108864,
+            67108864,
+            67108864
+        ],
+        "fairdb_use_pooled": true,
+        "fairdb_reserved_space": 5242880,
+        "requestdistribution": [
+            "uniform",
+            "uniform",
+            "uniform",
+            "uniform"
+        ]
+    },
+    "pooled_run": {
+        "recordcount": [
+            1280,
+            100000,
+            100000,
+            100000
+        ],
+        "operationcount": 500000,
+        "fieldcount": 16,
+        "fieldlength": 512,
+        "rocksdb.num_cfs": 4,
+        "target_rates": [
+            20,
+            1000,
+            1000,
+            1000
+        ],
+        "read_rate_limits": [
+            500,
+            500,
+            500,
+            500
+        ],
+        "rocksdb.cache_size": [
+            41943040,
+            10485760,
+            10485760,
+            10485760
+        ],
+        "io_read_capacity_kbps": 2048000,
+        "rsched": false,
+        "refill_period": 5,
+        "rsched_interval_ms": 50,
+        "lookback_intervals": 30,
+        "rsched_rampup_multiplier": "1.2",
+        "burst_gap_s": 0,
+        "burst_size_ops": 1,
+        "io_write_capacity_kbps": 10,
+        "memtable_capacity_kb": 10,
+        "max_memtable_size_kb": 10,
+        "min_memtable_size_kb": 10,
+        "min_memtable_count": 1,
+        "client_to_cf_map": [
+            "default",
+            "default",
+            "default",
+            "default"
+        ],
+        "client_to_cf_offset": [
+            0,
+            100000,
+            200000,
+            300000
+        ],
+        "rocksdb.disable_auto_compactions": true,
+        "rocksdb.compression_per_level": [
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression",
+            "kSnappyCompression"
+        ],
+        "rocksdb.max_write_buffer_number": [
+            20,
+            20,
+            20,
+            20
+        ],
+        "rocksdb.min_write_buffer_number_to_merge": [
+            1,
+            1,
+            1,
+            1
+        ],
+        "rocksdb.write_buffer_size": [
+            67108864,
+            67108864,
+            67108864,
+            67108864
+        ],
+        "fairdb_use_pooled": false,
+        "fairdb_reserved_space": 5242880,
+        "requestdistribution": [
+            "uniform",
+            "uniform",
+            "uniform",
+            "uniform"
+        ]
+    }
+}
