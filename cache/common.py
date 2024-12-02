@@ -35,8 +35,8 @@ def get_args(num_clients):
         "min_memtable_size_kb": 10,
         "min_memtable_count": 1,
 
-        "client_to_cf_map": ["default", "cf1", "cf2", "cf3"],
-        "client_to_cf_offset": [0] * 4,
+        "client_to_cf_map": ["default"] + [f"cf{i}" for i in range(1, num_clients)],
+        "client_to_cf_offset": [0] * num_clients,
 
         "rocksdb.disable_auto_compactions": True,
         "rocksdb.compression_per_level": ['kSnappyCompression']* num_clients,
@@ -44,8 +44,12 @@ def get_args(num_clients):
         "rocksdb.min_write_buffer_number_to_merge": [1] * num_clients,
         "rocksdb.write_buffer_size": [67108864] * num_clients,
 
+        "tpool_threads": 24,
+        "requestdistribution": ["uniform"] * num_clients,
+
         "fairdb_use_pooled": False,
-        "fairdb_reserved_space": 0
+        "fairdb_cache_rad": 100,
+        "cache_num_shard_bits": -1
     }
 
 import os
@@ -88,9 +92,10 @@ def do_load (args, num_tables):
         """
         args_load = {**args}
         del args_load["target_rates"]
+        args_load["fairdb_use_pooled"] = False
 
-        run_cmd(add_args_to_cmd(cmd, args))
-    
+        run_cmd(add_args_to_cmd(cmd, args_load))
+
 def do_run (args, output=False):
     num_tables = args["rocksdb.num_cfs"]
     cmd = f"""./ycsb \
@@ -120,10 +125,17 @@ def plot_cache_allocs(df, x_label, s_label, dest):
     timestamp_series = None
     for client_id in df["client_id"].unique():
         ys.append(df[df["client_id"] == client_id].set_index("timestamp")["cache_capacity"].apply(lambda c: c/(1024*1024)))
-        if timestamp_series is None:
-            timestamp_series = (ys[0].index-min(ys[0].index))/1000
-        else:
-            ys[-1] = ys[-1].iloc[:len(timestamp_series)]
+
+    
+    min_y_len = 10000000
+    timestamp_series = None
+    for y in ys:
+        if len(y) < min_y_len:
+            min_y_len = len(y)
+            timestamp_series = (y.index-min(y.index))/1000
+
+    ys = [y.iloc[:min_y_len] for y in ys]
+    
 
     fig, ax = plt.subplots()
     ax.stackplot(
