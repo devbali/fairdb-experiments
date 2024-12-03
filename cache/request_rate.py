@@ -13,13 +13,12 @@ def do (rate, opp_rate, NUM=4, TABLE_SIZE=10000, OPERATION_COUNT = 1000000, load
     args["target_rates"] = [rate] + [opp_rate] * (NUM-1)
     args["rocksdb.cache_size"] = [CACHE_SIZE] * NUM
     args["operationcount"] = OPERATION_COUNT
-    args["recordcount"] = [TABLE_SIZE*NUM] + [TABLE_SIZE] * (NUM-1)
+    args["recordcount"] = [TABLE_SIZE] * NUM
     args["requestdistribution"] = ["uniform"] * NUM
 
     if load:
         dump_args["load"] = {**args}
         do_load(args, NUM)
-    args["recordcount"] = [TABLE_SIZE] * NUM
 
     # isolation
     dump_args["isolation_run"] = {**args}

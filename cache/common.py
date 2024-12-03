@@ -117,14 +117,14 @@ def do_run (args, output=False):
         print("done")
 
 def plot_cache_allocs(df, x_label, s_label, dest):
-    if df.iloc[0]["cache_capacity"] == 0:
+    if df.iloc[0]["user_cache_usage"] == 0:
         return
     real_dest = dest.replace(".png", f"_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png")
 
     ys = []
     timestamp_series = None
     for client_id in df["client_id"].unique():
-        ys.append(df[df["client_id"] == client_id].set_index("timestamp")["cache_capacity"].apply(lambda c: c/(1024*1024)))
+        ys.append(df[df["client_id"] == client_id].set_index("timestamp")["user_cache_usage"].apply(lambda c: c/(1024*1024)))
 
     
     min_y_len = 10000000
@@ -152,6 +152,43 @@ def plot_cache_allocs(df, x_label, s_label, dest):
     ax.legend()
     plt.savefig(real_dest)
 
+def plot_hit_rate (df, x_label, s_label, dest):
+    FIELDS = ["user_cache_hits", "user_cache_misses"]
+    if df.iloc[-1][FIELDS[0]] == 0:
+        FIELDS = ["global_cache_hits", "global_cache_misses"]
+    if df.iloc[-1][FIELDS[0]] == 0:
+        return
+    real_dest = dest.replace(".png", f"hit_rate_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png")
+
+    ys = []
+    for client_id in df["client_id"].unique():
+        cum_arr_dict = {"timestamp": df[df["client_id"] == client_id]["timestamp"]}
+        for f in FIELDS:
+            cum_arr_dict[f] = np.diff(df[df["client_id"] == client_id][f], prepend=0)
+        cumulative_arrays = pd.DataFrame(cum_arr_dict)
+        ys.append(cumulative_arrays.set_index("timestamp").apply(lambda r: 100 * r[FIELDS[0]] / (r[FIELDS[0]] + r[FIELDS[1]]), axis=1))
+    
+    min_y_len = 10000000
+    timestamp_series = None
+    for y in ys:
+        if len(y) < min_y_len:
+            min_y_len = len(y)
+            timestamp_series = (y.index-min(y.index))/1000
+
+    ys = [y.iloc[:min_y_len] for y in ys]
+    fig, ax = plt.subplots()
+    for i in range(len(ys)):
+        y = ys[i]
+        ax.plot(timestamp_series, y, label = f'Client {i}')
+
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel('Hit Rate (%)')
+    ax.set_title(f"Cache in {x_label} {s_label}")
+
+    ax.legend()
+    plt.savefig(real_dest)
+
+
 def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d['std'].mean(),
     series_labels=['Isolation', 'Pooled'],
     x_label="Config",
@@ -167,6 +204,7 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
             s = series_labels[sindex]
             vals = f(run[sindex])
             plot_cache_allocs(run[sindex], labels[ri], s, dest)
+            plot_hit_rate(run[sindex], labels[ri], s, dest)
             print(vals)
             seriess[s].append(vals)
             errors[s].append(err_f(run[sindex]))

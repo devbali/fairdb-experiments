@@ -12,10 +12,10 @@ args = get_args(NUM)
 args["operationcount"] = OPERATION_COUNT
 args["fieldlength"] = FIELD_LENGTH
 args["rocksdb.cache_size"] = [CACHE_SIZE] * NUM
-args["cache_num_shard_bits"] = 10
+args["cache_num_shard_bits"] = 7
 args["target_rates"] = [TARGET_RATE] * NUM
-args["fairdb_use_pooled"] = True
-args["fairdb_cache_rad"] = 1000000
+args["fairdb_use_pooled"] = False
+args["fairdb_cache_rad"] = 0
 args["tpool_threads"] = THREAD_COUNT
 args["rsched"] = False
 
