@@ -46,10 +46,13 @@ def get_args(num_clients):
 
         "tpool_threads": 24,
         "requestdistribution": ["uniform"] * num_clients,
+        "status.interval_ms": 100,
 
         "fairdb_use_pooled": False,
         "fairdb_cache_rad": 100,
-        "cache_num_shard_bits": -1
+        "cache_num_shard_bits": -1,
+        "ramp_duration": [0] * num_clients,
+        "ramp_start": [0] * num_clients
     }
 
 import os
@@ -116,6 +119,34 @@ def do_run (args, output=False):
     except NameError:
         print("done")
 
+def transform_timestamp_series (s):
+    m = s.min()
+    return pd.Series(list(s)).apply(lambda s: (s-m)/1000)
+
+ROLLING_WINDOW = 5
+def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label):
+    fig, ax = plt.subplots()
+    for i in range(len(ys)):
+        y = ys[i]
+        ax.plot(transform_timestamp_series(y.index), y, label = f'Client {i}', color=colors[i])
+
+    ax.set_xlabel('Time (s)')
+    ax.set_ylabel(y_label)
+    ax.set_title(f"Cache in {x_label} {s_label}")
+
+    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+    fig.set_size_inches(12, 6)
+    plt.savefig(dest)
+
+def plot_field (df, x_label, s_label, dest, colors, FIELD = "99p"):
+    ys = []
+    for client_id in df["client_id"].unique():
+        y = df[df["client_id"] == client_id][["timestamp", FIELD]].set_index("timestamp").rolling(window=ROLLING_WINDOW).mean()
+        ys.append(y)
+
+    time_series_line_graph(ys, x_label, s_label, 
+        dest.replace(".png", f"p99_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, FIELD)
+
 def plot_cache_allocs(df, x_label, s_label, dest):
     if df.iloc[0]["user_cache_usage"] == 0:
         return
@@ -124,7 +155,7 @@ def plot_cache_allocs(df, x_label, s_label, dest):
     ys = []
     timestamp_series = None
     for client_id in df["client_id"].unique():
-        ys.append(df[df["client_id"] == client_id].set_index("timestamp")["user_cache_usage"].apply(lambda c: c/(1024*1024)))
+        ys.append(df[df["client_id"] == client_id].set_index("timestamp")["user_cache_usage"].apply(lambda c: abs(c)/(1024*1024)).rolling(window=ROLLING_WINDOW).mean())
 
     
     min_y_len = 10000000
@@ -150,9 +181,10 @@ def plot_cache_allocs(df, x_label, s_label, dest):
     ax.set_title(f"Cache in {x_label} {s_label}")
 
     ax.legend()
+    fig.set_size_inches(12, 6)
     plt.savefig(real_dest)
 
-def plot_hit_rate (df, x_label, s_label, dest):
+def plot_hit_rate (df, x_label, s_label, dest, colors):
     FIELDS = ["user_cache_hits", "user_cache_misses"]
     if df.iloc[-1][FIELDS[0]] == 0:
         FIELDS = ["global_cache_hits", "global_cache_misses"]
@@ -166,27 +198,10 @@ def plot_hit_rate (df, x_label, s_label, dest):
         for f in FIELDS:
             cum_arr_dict[f] = np.diff(df[df["client_id"] == client_id][f], prepend=0)
         cumulative_arrays = pd.DataFrame(cum_arr_dict)
-        ys.append(cumulative_arrays.set_index("timestamp").apply(lambda r: 100 * r[FIELDS[0]] / (r[FIELDS[0]] + r[FIELDS[1]]), axis=1))
-    
-    min_y_len = 10000000
-    timestamp_series = None
-    for y in ys:
-        if len(y) < min_y_len:
-            min_y_len = len(y)
-            timestamp_series = (y.index-min(y.index))/1000
+        ys.append(cumulative_arrays.set_index("timestamp").apply(lambda r: 100 * r[FIELDS[0]] / (r[FIELDS[0]] + r[FIELDS[1]]), axis=1).rolling(window=ROLLING_WINDOW).mean())
 
-    ys = [y.iloc[:min_y_len] for y in ys]
-    fig, ax = plt.subplots()
-    for i in range(len(ys)):
-        y = ys[i]
-        ax.plot(timestamp_series, y, label = f'Client {i}')
-
-    ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Hit Rate (%)')
-    ax.set_title(f"Cache in {x_label} {s_label}")
-
-    ax.legend()
-    plt.savefig(real_dest)
+    time_series_line_graph(ys, x_label, s_label, 
+        dest.replace(".png", f"hit_rate_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Hit Rate (%)')
 
 
 def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d['std'].mean(),
@@ -194,19 +209,22 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
     x_label="Config",
     y_label="Average (Mean) Latency",
     title='Affect of Comparative Request Rate on Latency in RocksDB Block Cache',
-    dest=f"graph.png"):
+    dest=f"graph.png",
+    colors=[]):
     
     seriess = {s: [] for s in series_labels}
     errors = {s: [] for s in series_labels}
     for ri in range(len(data)):
         run = data[ri]
+        #print(run)
         for sindex in range(len(series_labels)):
             s = series_labels[sindex]
-            vals = f(run[sindex])
+            val = f(run[sindex])
             plot_cache_allocs(run[sindex], labels[ri], s, dest)
-            plot_hit_rate(run[sindex], labels[ri], s, dest)
-            print(vals)
-            seriess[s].append(vals)
+            plot_hit_rate(run[sindex], labels[ri], s, dest, colors)
+            plot_field(run[sindex], labels[ri], s, dest, colors, "99p")
+            print(val)
+            seriess[s].append(val)
             errors[s].append(err_f(run[sindex]))
 
     x = np.arange(len(labels))
