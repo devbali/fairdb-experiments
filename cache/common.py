@@ -44,7 +44,7 @@ def get_args(num_clients):
         "rocksdb.min_write_buffer_number_to_merge": [1] * num_clients,
         "rocksdb.write_buffer_size": [67108864] * num_clients,
 
-        "tpool_threads": 24,
+        "tpool_threads": 256,
         "requestdistribution": ["uniform"] * num_clients,
         "status.interval_ms": 100,
 
@@ -140,12 +140,12 @@ def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label):
 
 def plot_field (df, x_label, s_label, dest, colors, FIELD = "99p"):
     ys = []
-    for client_id in df["client_id"].unique():
+    for client_id in sorted(df["client_id"].unique()):
         y = df[df["client_id"] == client_id][["timestamp", FIELD]].set_index("timestamp").rolling(window=ROLLING_WINDOW).mean()
         ys.append(y)
 
     time_series_line_graph(ys, x_label, s_label, 
-        dest.replace(".png", f"p99_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, FIELD)
+        dest.replace(".png", f"{FIELD}_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, FIELD)
 
 def plot_cache_allocs(df, x_label, s_label, dest):
     if df.iloc[0]["user_cache_usage"] == 0:
@@ -153,31 +153,29 @@ def plot_cache_allocs(df, x_label, s_label, dest):
     real_dest = dest.replace(".png", f"_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png")
 
     ys = []
-    timestamp_series = None
-    for client_id in df["client_id"].unique():
-        ys.append(df[df["client_id"] == client_id].set_index("timestamp")["user_cache_usage"].apply(lambda c: abs(c)/(1024*1024)).rolling(window=ROLLING_WINDOW).mean())
-
+    df["time_s"] = transform_timestamp_series(df["timestamp"])
+    for client_id in sorted(df["client_id"].unique()):
+        ys.append(df[df["client_id"] == client_id].set_index("time_s")["user_cache_usage"].apply(lambda c: abs(c)/(2**30)))
     
-    min_y_len = 10000000
-    timestamp_series = None
-    for y in ys:
-        if len(y) < min_y_len:
-            min_y_len = len(y)
-            timestamp_series = (y.index-min(y.index))/1000
+    time_series = ys[0].index
+    for y in ys[1:]:
+        time_series = time_series.union(y.index)
 
-    ys = [y.iloc[:min_y_len] for y in ys]
-    
+    interpolated_series = []
+    for series in ys:
+        series_interp = series.reindex(time_series).interpolate(method='linear').fillna(0)
+        interpolated_series.append(series_interp)
 
     fig, ax = plt.subplots()
     ax.stackplot(
-        timestamp_series, 
-        *ys, 
+        time_series, 
+        *interpolated_series, 
         labels=[f'Client {i}' for i in range(len(ys))],
         baseline="zero"
     )
 
     ax.set_xlabel('Time (s)')
-    ax.set_ylabel('Cache capacity (MB)')
+    ax.set_ylabel('Cache capacity (GB)')
     ax.set_title(f"Cache in {x_label} {s_label}")
 
     ax.legend()
@@ -193,7 +191,7 @@ def plot_hit_rate (df, x_label, s_label, dest, colors):
     real_dest = dest.replace(".png", f"hit_rate_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png")
 
     ys = []
-    for client_id in df["client_id"].unique():
+    for client_id in sorted(df["client_id"].unique()):
         cum_arr_dict = {"timestamp": df[df["client_id"] == client_id]["timestamp"]}
         for f in FIELDS:
             cum_arr_dict[f] = np.diff(df[df["client_id"] == client_id][f], prepend=0)
@@ -223,7 +221,7 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
             plot_cache_allocs(run[sindex], labels[ri], s, dest)
             plot_hit_rate(run[sindex], labels[ri], s, dest, colors)
             plot_field(run[sindex], labels[ri], s, dest, colors, "99p")
-            print(val)
+            # plot_field(run[sindex], labels[ri], s, dest, colors, "user_cache_usage")
             seriess[s].append(val)
             errors[s].append(err_f(run[sindex]))
 
