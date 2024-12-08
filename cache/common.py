@@ -213,7 +213,7 @@ def plot_hit_rate (df, x_label, s_label, dest, colors):
         for f in FIELDS:
             cum_arr_dict[f] = np.diff(df[df["client_id"] == client_id][f], prepend=0)
         cumulative_arrays = pd.DataFrame(cum_arr_dict)
-        ys.append(cumulative_arrays.set_index("timestamp").apply(lambda r: 100 * r[FIELDS[0]] / (r[FIELDS[0]] + r[FIELDS[1]]), axis=1).rolling(window=ROLLING_WINDOW).mean())
+        ys.append(cumulative_arrays.set_index("timestamp").apply(lambda r: 100 * r[FIELDS[0]] / (r[FIELDS[0]] + r[FIELDS[1]]), axis=1))
 
     time_series_line_graph(ys, x_label, s_label, 
         dest.replace(".png", f"hit_rate_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Hit Rate (%)')
@@ -222,11 +222,9 @@ def plot_throughput (df, x_label, s_label, dest, colors, warmup):
     ys = []
     for client_id in sorted(df["client_id"].unique()):
         client_df = df[df["client_id"] == client_id]
-        client_df["throughput"] = client_df["throughput"] / 2 ** 20
-        d = pd.to_datetime("2020-1-1")
-        client_df["time_s_fake"] = d + client_df["time_s"].apply(lambda r: pd.Timedelta(seconds=r))
-        ms_window = 200
-        ys.append(1000/ms_window * client_df[["time_s_fake", "throughput", "timestamp"]].rolling(window=f"{ms_window}ms", on="time_s_fake").agg({"timestamp":"max", "throughput":"sum"}).set_index("timestamp")["throughput"])
+        client_df["throughput"] = (client_df["throughput"] / 2 ** 20) / (client_df["timestamp"].diff() / 1000)
+        #print("AVG THROUGHPUT", client_df[(client_df["time_s"] > 200) & (client_df["time_s"] < 600)] ["throughput"].mean())
+        ys.append(client_df.set_index("timestamp")["throughput"])
 
     time_series_line_graph(ys, x_label, s_label,
         dest.replace(".png", f"throughput_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Throughput in MB/s', warmup=warmup)
@@ -258,6 +256,7 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
 
             s = series_labels[sindex]
             val = f(single_run)
+            print("val for single run:", val)
             plot_cache_allocs(single_run, labels[ri], s, dest)
             plot_hit_rate(single_run, labels[ri], s, dest, colors)
             plot_field(single_run, labels[ri], s, dest, colors, "99p", warmup_seconds)

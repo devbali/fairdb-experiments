@@ -62,9 +62,6 @@ else:
 MILLISECOND_INTERVAL = get_args(1)["status.interval_ms"] # use default interval
 WARMUP_SECONDS = int(BAD_WORKING_SET_SIZE/TARGET_RATE)
 COOLDOWN_SECONDS = 2
-filterer = lambda d: remove_outliers(d[(d['client_id'].isin([1])) & (d["op_type"] == "READ")].iloc[
-    WARMUP_SECONDS*1000//MILLISECOND_INTERVAL:-COOLDOWN_SECONDS*1000//MILLISECOND_INTERVAL
-    ]['avg'])
 
 USE_CACHED = "cached" in sys.argv[1]
 NO_LOAD_RUN = True
@@ -216,9 +213,14 @@ Target Rates:
 print(config)
 
 def f(d):
-    fil = filterer(d)
-    print(list(fil)[:100], f"... ({len(fil) - 100} more)")
-    return fil.mean()
+    df = d[(d['client_id'].isin([1])) & (d["op_type"] == "READ")]
+    max_time = df["time_s"].max()
+    return remove_outliers(df[(df["time_s"] > WARMUP_SECONDS) & (df["time_s"] < max_time - COOLDOWN_SECONDS)]["avg"]).mean()
+
+def err (d):
+    df = d[(d['client_id'].isin([1])) & (d["op_type"] == "READ")]
+    max_time = df["time_s"].max()
+    return remove_outliers(df[(df["time_s"] > WARMUP_SECONDS) & (df["time_s"] < max_time - COOLDOWN_SECONDS)]["avg"]).std()
 
 labels = ["Isolation"]
 for rad in RADS:
@@ -231,7 +233,7 @@ plot_data(labels=[''],
         do (slightly_under_half, slightly_under_fair, BAD_WORKING_SET_SIZE, NUM, load=not NO_LOAD_RUN)
     ],
     f=f, #lambda d: filterer(d).mean(),
-    err_f=lambda d: filterer(d).std(),
+    err_f= err, #lambda d: filterer(d).std(),
     x_label="Working set of the Steady-Ramp client",
     y_label="Average (Mean) Latency",
     title=f'Steady clients\' latencies (when {STEADY_NUM} Steady vs {RAMP_UP_NUM} Ramp vs {BAD_NUM} bad)',
