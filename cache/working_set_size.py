@@ -3,15 +3,27 @@ import json
 import time
 import math
 import os
+import sys
 
 # 4 kb records
 RECORD_SIZE = 4 * 2 ** 10
 
+SMALL_RUN = "small" in sys.argv[1]
+DISTRIBUTION = "zipfian" if "zipfian" in sys.argv[1] else "uniform"
+MULTI_RUN = "multi" in sys.argv[1]
+
 # isolated cache size 5 GB
-CACHE_SIZE = 5 * 2 ** 30
+if not SMALL_RUN:
+    CACHE_SIZE = 5 * 2 ** 30
+else:
+    CACHE_SIZE = 5 * 2 ** 27 # small
 
 # Working set size for bad clients is 100 GB
-BAD_WORKING_SET_SIZE = (100 * 2 ** 30) // RECORD_SIZE
+if not SMALL_RUN:
+    BAD_WORKING_SET_SIZE = (100 * 2 ** 30) // RECORD_SIZE
+else:
+    BAD_WORKING_SET_SIZE = (100 * 2 ** 27) // RECORD_SIZE # small
+
 
 # 12 Steady, 2 Ramp down and up, 2 Bad clients, for a total of 16
 NUM = 16
@@ -21,25 +33,40 @@ BAD_NUM = NUM - STEADY_NUM - RAMP_UP_NUM  # 2
 
 # We target a read io throughput, base the bad clients' target rate based on that
 # Other clients' rates will be scaled accordingly so throughput is at TARGET_BANDWIDTH
-TARGET_BANDWIDTH = (6000 * 2 ** 20) // 16 # 6000 MB/s total / roughly 16
+TARGET_BANDWIDTH = (6000 * 2 ** 20) // 16 # 6000 MB/s total / roughly 8
 TARGET_RATE = int((TARGET_BANDWIDTH / RECORD_SIZE) / 2.405) # Bad clents' only (~2.405x for total)
 
-# 1 hr experiments
-OPERATION_TIME = 60 * 60
-
+NUM_TPOOL_THREADS = 360
 NUM_RECORDS_PER_SHARD = 256
 
-RAMP_START = 60 # FRACTION OUT OF 120, not time
-RAMP_DURATION = 30 # FRACTION OUT OF 120, not time
+RADS = [0, 2 * 10**6, 5 * 10**6, 10 * 10**6, 500 * 10**6]
+if SMALL_RUN:
+    RADS = [rad // 8 for rad in RADS]
+
+if MULTI_RUN:
+    NUM_READ_BURST_CYCLES = 10
+    RAMP_START = 0
+    RAMP_DURATION = 0
+    BAD_RAMP_START = 0
+    BAD_RAMP_DURATION = 0
+    OPERATION_TIME = 60
+
+else:
+    NUM_READ_BURST_CYCLES = 0
+    RAMP_START = 0 # FRACTION OUT OF 120, not time
+    RAMP_DURATION = 0 # FRACTION OUT OF 120, not time
+    BAD_RAMP_START = 12
+    BAD_RAMP_DURATION = 120-12
+    OPERATION_TIME = 300
 
 MILLISECOND_INTERVAL = get_args(1)["status.interval_ms"] # use default interval
-WARMUP_SECONDS = 240
+WARMUP_SECONDS = int(BAD_WORKING_SET_SIZE/TARGET_RATE)
 COOLDOWN_SECONDS = 2
 filterer = lambda d: remove_outliers(d[(d['client_id'].isin([1])) & (d["op_type"] == "READ")].iloc[
     WARMUP_SECONDS*1000//MILLISECOND_INTERVAL:-COOLDOWN_SECONDS*1000//MILLISECOND_INTERVAL
     ]['avg'])
 
-USE_CACHED = False
+USE_CACHED = "cached" in sys.argv[1]
 NO_LOAD_RUN = True
 
 # ___ Calculated
@@ -53,15 +80,34 @@ FIELD_LENGTH = RECORD_SIZE // FIELD_NUM # 8kb records
 
 get_target_rate = lambda s, bws=BAD_WORKING_SET_SIZE: max(20, int(TARGET_RATE*s/bws))
 
-def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NUM=NUM, OPERATION_TIME = OPERATION_TIME, load=False):
+def get_read_burst_num_records (RAD):
+    READ_BURST_SIZE = RAD * (6000 * (2**20/10**6) // 16)
+    READ_BURST_NUM_RECORDS = int(READ_BURST_SIZE // RECORD_SIZE)
+    print(f"RAD {RAD/10**6} seconds. READ BURST NUM RECORDS: {READ_BURST_NUM_RECORDS}. Size: {READ_BURST_SIZE / 2**20} MB = {READ_BURST_SIZE / 2**30} GB")
+    return READ_BURST_NUM_RECORDS
+
+
+def get_with_throughput (csv_path_or_df, rad):
+    if isinstance(csv_path_or_df, str):
+        df = pd.read_csv(csv_path_or_df)
+    else: df = csv_path_or_df
+    df["time_s"] = (df["timestamp"] - df["timestamp"].min()) / 1000
+    def get_throughput_for_row (r):
+        assert r["op_type"] in ["READ", "MULTI_READ", "READ_FAIL", "MULTI_READ_FAIL"]
+        if r["op_type"] == "READ":
+            return RECORD_SIZE * r["count"]
+        if r["op_type"] == "MULTI_READ":
+            return RECORD_SIZE * r["count"] * get_read_burst_num_records(rad)
+    df["throughput"] = df.apply(get_throughput_for_row, axis=1)
+    return df
+
+def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NUM=NUM, OPERATION_TIME = OPERATION_TIME, RADS=RADS, load=False):
     title = f"{steady_working_set_size}_vs_{ramp_working_set_size}_vs_{bad_working_set_size}_num_{STEADY_NUM},{RAMP_UP_NUM},{BAD_NUM}_cachesize_{CACHE_SIZE//(1024*1024)}_operationtime_{OPERATION_TIME}"
     isolation_path = f"{OUTPUT_FOLDER}/isolation_data_{title}.csv"
-    fairdb_inf_path =  f"{OUTPUT_FOLDER}/fairdb_inf_data_{title}.csv"
-    fairdb_mid_path = f"{OUTPUT_FOLDER}/fairdb_mid_{title}.csv"
-    fairdb_zero_path = f"{OUTPUT_FOLDER}/fairdb_0_{title}.csv"
+    fairdb_path = lambda rad: f"{OUTPUT_FOLDER}/fairdb_{rad}_{title}.csv"
 
     if USE_CACHED:
-        return pd.read_csv(isolation_path), pd.read_csv(fairdb_inf_path), pd.read_csv(fairdb_mid_path), pd.read_csv(fairdb_zero_path)
+        return [get_with_throughput(isolation_path,0), *[get_with_throughput(fairdb_path(r),r) for r in RADS]]
 
     dump_args = {}
     args = get_args(NUM)
@@ -76,7 +122,9 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
     args["operationcount"] = sum([rate * OPERATION_TIME for rate in args["target_rates"]])
     args["fieldlength"] = FIELD_LENGTH
     args["recordcount"] = [bad_working_set_size] * NUM
-    args["requestdistribution"] = ["uniform"] * NUM
+    args["requestdistribution"] = [DISTRIBUTION] * NUM
+    args["forced_warmup"] = True
+    args["tpool_threads"] = NUM_TPOOL_THREADS
 
     dump_args["load"] = {**args}
     if load: do_load(args, NUM)
@@ -88,65 +136,61 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
     args["ramp_duration"] = (
         [0] * STEADY_NUM + 
         [RAMP_DURATION] * RAMP_UP_NUM +
-        [0] * BAD_NUM
+        [BAD_RAMP_DURATION] * BAD_NUM
     )
 
     args["ramp_start"] = (
         [0] * STEADY_NUM + 
         [RAMP_START] * RAMP_UP_NUM +
-        [0] * BAD_NUM
+        [BAD_RAMP_START] * BAD_NUM
     )
 
     # isolation
     args["fairdb_use_pooled"] = False
     args["cache_num_shard_bits"] = CACHE_SHARD_BITS_ISOLATED
     dump_args["isolation_run"] = {**args}
-    isolation_data = do_run(args)
-    isolation_data.to_csv(isolation_path)
+    USE_CACHED_FOR_ISOLATED = False
+    USE_CACHED_FOR_ZERO_RAD = False
+
+    if USE_CACHED_FOR_ISOLATED:
+        isolation_data = get_with_throughput(isolation_path,0)
+    else:
+        isolation_data = get_with_throughput(do_run(args),0)
+        isolation_data.to_csv(isolation_path)
+
+    print(f"""
+    ISOLATION DATA: {filterer(isolation_data).mean()}
+    {isolation_data}""")
 
     # fairdb infinite rad
     args["fairdb_use_pooled"] = True
     args["rocksdb.cache_size"][0] *= NUM
     args["cache_num_shard_bits"] = CACHE_SHARD_BITS_POOLED
-    args["fairdb_cache_rad"] = 100000000 # 100 seconds, infinite basically
-    dump_args["fairdb_inf_rad"] = {**args}
-    fairdb_inf = do_run(args)
-    fairdb_inf.to_csv(fairdb_inf_path)
 
-    # fairdb mid rad
-    args["fairdb_cache_rad"] = 5000000 # 5 seconds
-    dump_args["fairdb_mid_rad"] = {**args}
-    fairdb_mid = do_run(args)
-    fairdb_mid.to_csv(fairdb_mid_path)
+    datas = []
+    for rad in RADS:
+        args["num_read_burst_cycles"] = [NUM_READ_BURST_CYCLES if rad > 0 else 0] * NUM
+        args["fairdb_cache_rad"] = rad
+        args["read_burst_num_records"] = [0] * STEADY_NUM + [get_read_burst_num_records(rad)] * RAMP_UP_NUM + [0] * BAD_NUM
+        dump_args[f"fairdb_{rad}_rad"] = {**args}
+        if rad == 0 and USE_CACHED_FOR_ZERO_RAD: datas.append(get_with_throughput(fairdb_path(rad),rad))
+        else:
+            datas.append(get_with_throughput(do_run(args), rad))
+            datas[-1].to_csv(fairdb_path(rad))
 
-    # fairdb zero rad
-    args["fairdb_cache_rad"] = 0
-    dump_args["fairdb_zero_rad"] = {**args}
-    fairdb_zero = do_run(args)
-    fairdb_zero.to_csv(fairdb_zero_path)
-
-    print(f"""
-    ISOLATION DATA: {filterer(isolation_data).mean()}
-    {isolation_data}
-    
-    FAIRDB INF RAD DATA {filterer(fairdb_inf).mean()}
-    {fairdb_inf}
-    
-    FAIRDB 5000000 RAD DATA {filterer(fairdb_mid).mean()}
-    {fairdb_mid}
-
-    FAIRDB ZERO RAD DATA {filterer(fairdb_zero).mean()}
-    {fairdb_zero}
-    """)
+        print(f"""
+    FAIRDB RAD {rad//10**6} SECONDS {filterer(datas[-1]).mean()}
+    {datas[-1]}
+""")
     
     with open(f"{OUTPUT_FOLDER}/args_{title}.json", "w") as f:
         json.dump(dump_args, f, indent=4)
 
     time.sleep(1)
-    return isolation_data, fairdb_inf, fairdb_mid, fairdb_zero
+    return [isolation_data, *datas]
 
 # BAD
-MULTIPLIER = 0.9
+MULTIPLIER = 0.8
 slightly_under_half = int (MULTIPLIER* ((CACHE_SIZE/2) / RECORD_SIZE))
 slightly_under_fair = int (MULTIPLIER* ((CACHE_SIZE) / RECORD_SIZE))
 slightly_above_fair = CACHE_SIZE // RECORD_SIZE
@@ -173,11 +217,16 @@ print(config)
 
 def f(d):
     fil = filterer(d)
-    print(list(fil)[:-100], f"... ({len(fil) - 100} more)")
+    print(list(fil)[:100], f"... ({len(fil) - 100} more)")
     return fil.mean()
 
+labels = ["Isolation"]
+for rad in RADS:
+    labels.append(f"FairDB {rad} RAD")
+labels[-1] = 'Pooled (FairDB Infinite RAD)'
+
 plot_data(labels=[''],
-    series_labels=['Isolation', 'Pooled (FairDB Infinite RAD)', 'FairDB 5000000 RAD', 'FairDB 0 RAD'],
+    series_labels=labels,
     data=[
         do (slightly_under_half, slightly_under_fair, BAD_WORKING_SET_SIZE, NUM, load=not NO_LOAD_RUN)
     ],
@@ -187,7 +236,8 @@ plot_data(labels=[''],
     y_label="Average (Mean) Latency",
     title=f'Steady clients\' latencies (when {STEADY_NUM} Steady vs {RAMP_UP_NUM} Ramp vs {BAD_NUM} bad)',
     dest=f"{OUTPUT_FOLDER}/num_{NUM}_cachesize_{CACHE_SIZE//(2**30)}_time_{OPERATION_TIME}.png",
-    colors=["grey"] * STEADY_NUM + ["blue"] * RAMP_UP_NUM + ["red"] * BAD_NUM)
+    colors=["grey"] * STEADY_NUM + ["blue"] * RAMP_UP_NUM + ["red"] * BAD_NUM,
+    rads = [0] + RADS)
 
 
 # plot_data(labels=['Very small','Slightly under 1/2', 'Slightly under fair', 'Slightly Above fair'],

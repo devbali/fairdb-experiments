@@ -8,6 +8,7 @@ except ModuleNotFoundError:
 remove_outliers = lambda d: d[np.abs((d - d.mean()) / d.std()) < 5]
 #remove_outliers = lambda d: d[d < d.quantile(0.98)]
 filterer = lambda d: remove_outliers(d[d['client_id'] == 0].iloc[20:-5]['avg'])
+DATA_DIR = "/mnt/rocksdb/ycsb-rocksdb-data"
 
 def get_args(num_clients):
     return {
@@ -17,15 +18,17 @@ def get_args(num_clients):
         "fieldlength": 1024//16, # total record size is 16 * 65536, which is 1024 * 1024, which is 1 MB
         "rocksdb.num_cfs": num_clients,
         "target_rates": [10000] * num_clients, # 10k requests a second
-        "read_rate_limits": [500] * num_clients, # 500 mb per second
         "rocksdb.cache_size": [1024*1024 * 40] * num_clients,
-        "io_read_capacity_kbps": 1024 * 500 * num_clients,
 
-        "rsched": False,
+        "rate_limits": [500] * num_clients,
+        "read_rate_limits": [1000] * num_clients,
+        "io_read_capacity_kbps": 6000 * 1024,
+
+        "rsched": True,
         "refill_period": 5,
         "rsched_interval_ms": 50,
         "lookback_intervals": 30,
-        "rsched_rampup_multiplier": "1.2",
+        "rsched_rampup_multiplier": 1.2,
         "burst_gap_s": 0,
         "burst_size_ops": 1,
 
@@ -48,11 +51,19 @@ def get_args(num_clients):
         "requestdistribution": ["uniform"] * num_clients,
         "status.interval_ms": 100,
 
+        "rocksdb.allow_mmap_reads": False,
+        "rocksdb.use_direct_reads": True,
+        "readallfields": True,
+
+
         "fairdb_use_pooled": False,
         "fairdb_cache_rad": 100,
         "cache_num_shard_bits": -1,
         "ramp_duration": [0] * num_clients,
-        "ramp_start": [0] * num_clients
+        "ramp_start": [0] * num_clients,
+        "forced_warmup": False,
+        "num_read_burst_cycles": [0] * num_clients,
+        "read_burst_num_records": [0] * num_clients
     }
 
 import os
@@ -78,7 +89,7 @@ def add_args_to_cmd (cmd, args, destfile="/tmp/output.txt"):
     return cmd
 
 def do_load (args, num_tables):
-    run_cmd("rm -rf /mnt/rocksdb/ycsb-rocksdb-data")
+    run_cmd(f"rm -rf {DATA_DIR}")
     for i in range(num_tables):
         if i == 0:
             tablename = "default"
@@ -90,7 +101,7 @@ def do_load (args, num_tables):
         -db rocksdb \
         -P workloads/workloada \
         -P rocksdb/rocksdb.properties \
-        -p rocksdb.dbname=/mnt/rocksdb/ycsb-rocksdb-data \
+        -p rocksdb.dbname={DATA_DIR} \
         -p table={tablename} \
         """
         args_load = {**args}
@@ -100,6 +111,8 @@ def do_load (args, num_tables):
         run_cmd(add_args_to_cmd(cmd, args_load))
 
 def do_run (args, output=False):
+    client_stats_path = "~/project/YCSB-cpp/logs/client_stats.log"
+    run_cmd(f"rm {client_stats_path}")
     num_tables = args["rocksdb.num_cfs"]
     cmd = f"""./ycsb \
         -run \
@@ -110,25 +123,29 @@ def do_run (args, output=False):
         -p insertproportion=0 \
         -p updateproportion=0 \
         -P rocksdb/rocksdb.properties \
-        -p rocksdb.dbname=/mnt/rocksdb/ycsb-rocksdb-data \
+        -p rocksdb.dbname={DATA_DIR} \
         """
+    #ulimit -v {(sum(args["rocksdb.cache_size"]) // 1024) * 3} && \\
 
-    run_cmd(add_args_to_cmd(cmd, args, destfile="" if output else "/tmp/output.txt"))
+    run_cmd(f"""{add_args_to_cmd(cmd, args, destfile="" if output else "/tmp/output.txt")}""")
+
     try:
-        return pd.read_csv("~/project/YCSB-cpp/logs/client_stats.log")
+        return pd.read_csv(client_stats_path)
     except NameError:
         print("done")
 
 def transform_timestamp_series (s):
     m = s.min()
-    return pd.Series(list(s)).apply(lambda s: (s-m)/1000)
+    return pd.Series(s).apply(lambda s: (s-m)/1000)
 
 ROLLING_WINDOW = 5
-def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label):
+def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label, warmup=0):
     fig, ax = plt.subplots()
     for i in range(len(ys)):
-        y = ys[i]
-        ax.plot(transform_timestamp_series(y.index), y, label = f'Client {i}', color=colors[i])
+        y = pd.DataFrame({"y":list(ys[i])}, ys[i].index).reset_index()
+        y["time_s"] = transform_timestamp_series(ys[i].index)
+        y = y[y["time_s"] >= warmup]
+        ax.plot(y["time_s"], y["y"], label = f'Client {i}', color=colors[i])
 
     ax.set_xlabel('Time (s)')
     ax.set_ylabel(y_label)
@@ -138,14 +155,14 @@ def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label):
     fig.set_size_inches(12, 6)
     plt.savefig(dest)
 
-def plot_field (df, x_label, s_label, dest, colors, FIELD = "99p"):
+def plot_field (df, x_label, s_label, dest, colors, FIELD = "99p", warmup=0):
     ys = []
     for client_id in sorted(df["client_id"].unique()):
-        y = df[df["client_id"] == client_id][["timestamp", FIELD]].set_index("timestamp").rolling(window=ROLLING_WINDOW).mean()
+        y = df[df["client_id"] == client_id][["timestamp", FIELD]].set_index("timestamp").rolling(window=ROLLING_WINDOW).mean()[FIELD]
         ys.append(y)
 
     time_series_line_graph(ys, x_label, s_label, 
-        dest.replace(".png", f"{FIELD}_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, FIELD)
+        dest.replace(".png", f"{FIELD}_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, FIELD, warmup)
 
 def plot_cache_allocs(df, x_label, s_label, dest):
     if df.iloc[0]["user_cache_usage"] == 0:
@@ -201,6 +218,18 @@ def plot_hit_rate (df, x_label, s_label, dest, colors):
     time_series_line_graph(ys, x_label, s_label, 
         dest.replace(".png", f"hit_rate_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Hit Rate (%)')
 
+def plot_throughput (df, x_label, s_label, dest, colors, warmup):
+    ys = []
+    for client_id in sorted(df["client_id"].unique()):
+        client_df = df[df["client_id"] == client_id]
+        client_df["throughput"] = client_df["throughput"] / 2 ** 20
+        d = pd.to_datetime("2020-1-1")
+        client_df["time_s_fake"] = d + client_df["time_s"].apply(lambda r: pd.Timedelta(seconds=r))
+        ms_window = 200
+        ys.append(1000/ms_window * client_df[["time_s_fake", "throughput", "timestamp"]].rolling(window=f"{ms_window}ms", on="time_s_fake").agg({"timestamp":"max", "throughput":"sum"}).set_index("timestamp")["throughput"])
+
+    time_series_line_graph(ys, x_label, s_label,
+        dest.replace(".png", f"throughput_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Throughput in MB/s', warmup=warmup)
 
 def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d['std'].mean(),
     series_labels=['Isolation', 'Pooled'],
@@ -208,28 +237,39 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
     y_label="Average (Mean) Latency",
     title='Affect of Comparative Request Rate on Latency in RocksDB Block Cache',
     dest=f"graph.png",
-    colors=[]):
+    colors=[], rads=[0,0],warmup_seconds=82):
     
     seriess = {s: [] for s in series_labels}
     errors = {s: [] for s in series_labels}
+    multi_get_data_latency = []
+    multi_get_data_rad = []
+    multi_get_data_variances = []
+
     for ri in range(len(data)):
         run = data[ri]
-        #print(run)
         for sindex in range(len(series_labels)):
+            single_run = run[sindex]
+            multi_reads = single_run[single_run["op_type"] == "MULTI_READ"]
+            if not multi_reads.empty and sindex != len(series_labels) - 1:
+                multi_get_data_rad.append(rads[sindex] / 10**6)
+                multi_get_data_latency.append(multi_reads["avg"].mean() / 10 ** 3)
+                multi_get_data_variances.append(multi_reads["avg"].std())
+            single_run = single_run[single_run["op_type"] == "READ"]
+
             s = series_labels[sindex]
-            val = f(run[sindex])
-            plot_cache_allocs(run[sindex], labels[ri], s, dest)
-            plot_hit_rate(run[sindex], labels[ri], s, dest, colors)
-            plot_field(run[sindex], labels[ri], s, dest, colors, "99p")
+            val = f(single_run)
+            plot_cache_allocs(single_run, labels[ri], s, dest)
+            plot_hit_rate(single_run, labels[ri], s, dest, colors)
+            plot_field(single_run, labels[ri], s, dest, colors, "99p", warmup_seconds)
+            plot_throughput(single_run, labels[ri], s, dest, colors, warmup_seconds)
             # plot_field(run[sindex], labels[ri], s, dest, colors, "user_cache_usage")
             seriess[s].append(val)
-            errors[s].append(err_f(run[sindex]))
+            errors[s].append(err_f(single_run))
 
     x = np.arange(len(labels))
 
     width = 0.35
     fig, ax = plt.subplots()
-    print("seriess", seriess)
 
     for sindex in range(len(series_labels)):
         s = series_labels[sindex]
@@ -244,3 +284,16 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
 
     # Display the plot
     plt.savefig(dest)
+
+    if multi_get_data_rad != []:
+        fig, ax = plt.subplots()
+        df = pd.DataFrame({"Avg Latency": multi_get_data_latency, "Std": multi_get_data_variances}, index=multi_get_data_rad)
+        ax.scatter(multi_get_data_rad, multi_get_data_latency)
+
+        line = [0] + multi_get_data_rad
+        ax.plot(line, line, color='red', linestyle='-', label="RAD Guarantee")
+
+        ax.set_xlabel("RAD (seconds)")
+        ax.set_ylabel("Mean Latency for Multi Get (seconds)")
+        ax.set_title("RAD vs Mean Latency for Multi Get")
+        plt.savefig(dest.replace(".png", "_multiget.png"))
