@@ -11,18 +11,19 @@ RECORD_SIZE = 4 * 2 ** 10
 SMALL_RUN = "small" in sys.argv[1]
 DISTRIBUTION = "zipfian" if "zipfian" in sys.argv[1] else "uniform"
 MULTI_RUN = "multi" in sys.argv[1]
+RAMP_DOWN = "rampdown" in sys.argv[1]
+
+SMALL_SCALE_FACTOR = 16
 
 # isolated cache size 5 GB
-if not SMALL_RUN:
-    CACHE_SIZE = 5 * 2 ** 30
-else:
-    CACHE_SIZE = 5 * 2 ** 27 # small
+CACHE_SIZE = 5 * 2 ** 30
+if SMALL_RUN:
+    CACHE_SIZE  //= SMALL_SCALE_FACTOR
 
 # Working set size for bad clients is 100 GB
-if not SMALL_RUN:
-    BAD_WORKING_SET_SIZE = (100 * 2 ** 30) // RECORD_SIZE
-else:
-    BAD_WORKING_SET_SIZE = (100 * 2 ** 27) // RECORD_SIZE # small
+BAD_WORKING_SET_SIZE = (100 * 2 ** 30) // RECORD_SIZE
+if SMALL_RUN:
+    BAD_WORKING_SET_SIZE //= SMALL_SCALE_FACTOR
 
 
 # 12 Steady, 2 Ramp down and up, 2 Bad clients, for a total of 16
@@ -33,15 +34,13 @@ BAD_NUM = NUM - STEADY_NUM - RAMP_UP_NUM  # 2
 
 # We target a read io throughput, base the bad clients' target rate based on that
 # Other clients' rates will be scaled accordingly so throughput is at TARGET_BANDWIDTH
-TARGET_BANDWIDTH = (6000 * 2 ** 20) // 16 # 6000 MB/s total / roughly 8
+TARGET_BANDWIDTH = (6000 * 2 ** 20) // 16
 TARGET_RATE = int((TARGET_BANDWIDTH / RECORD_SIZE) / 2.405) # Bad clents' only (~2.405x for total)
 
 NUM_TPOOL_THREADS = 360
 NUM_RECORDS_PER_SHARD = 256
 
 RADS = [0, 2 * 10**6, 5 * 10**6, 10 * 10**6, 500 * 10**6]
-if SMALL_RUN:
-    RADS = [rad // 8 for rad in RADS]
 
 if MULTI_RUN:
     NUM_READ_BURST_CYCLES = 10
@@ -49,15 +48,33 @@ if MULTI_RUN:
     RAMP_DURATION = 0
     BAD_RAMP_START = 0
     BAD_RAMP_DURATION = 0
-    OPERATION_TIME = 60
+    OPERATION_TIME = 300 if not SMALL_RUN else 60
+    RADS = [i * 10 ** 6 for i in range(11)]
 
-else:
+    # 12 mins (warmup) * 6 + 2 * 5 mins + 4 * 50 mins =  282 mins ~ 4-5 hrs
+
+elif RAMP_DOWN:
     NUM_READ_BURST_CYCLES = 0
     RAMP_START = 0 # FRACTION OUT OF 120, not time
     RAMP_DURATION = 0 # FRACTION OUT OF 120, not time
-    BAD_RAMP_START = 12
-    BAD_RAMP_DURATION = 120-12
-    OPERATION_TIME = 300
+    BAD_RAMP_START = 6
+    BAD_RAMP_DURATION = 120-BAD_RAMP_START
+    OPERATION_TIME = 3600 if not SMALL_RUN else 900
+
+    # 12 mins (warmup) * 6 + 6 * 60 mins =  432 mins ~ 7-8 hrs
+
+else: # stable
+    NUM_READ_BURST_CYCLES = 0
+    RAMP_START = 0 # FRACTION OUT OF 120, not time
+    RAMP_DURATION = 0 # FRACTION OUT OF 120, not time
+    BAD_RAMP_START = 0
+    BAD_RAMP_DURATION = 0
+    OPERATION_TIME = 1200 if not SMALL_RUN else 300
+
+    # 12 mins (warmup) * 6 + 20 * 6 = 192 mins ~ 3-4 hrs
+
+if SMALL_RUN:
+    RADS = [rad // SMALL_SCALE_FACTOR for rad in RADS]
 
 MILLISECOND_INTERVAL = get_args(1)["status.interval_ms"] # use default interval
 WARMUP_SECONDS = int(BAD_WORKING_SET_SIZE/TARGET_RATE)
@@ -78,7 +95,8 @@ FIELD_LENGTH = RECORD_SIZE // FIELD_NUM # 8kb records
 get_target_rate = lambda s, bws=BAD_WORKING_SET_SIZE: max(20, int(TARGET_RATE*s/bws))
 
 def get_read_burst_num_records (RAD):
-    READ_BURST_SIZE = RAD * (6000 * (2**20/10**6) // 16)
+    TOTAL_THROUGHPUT = 348 # 6000 # in mb/s
+    READ_BURST_SIZE = (RAD/10**6) * (TOTAL_THROUGHPUT * 2**20 / NUM)
     READ_BURST_NUM_RECORDS = int(READ_BURST_SIZE // RECORD_SIZE)
     print(f"RAD {RAD/10**6} seconds. READ BURST NUM RECORDS: {READ_BURST_NUM_RECORDS}. Size: {READ_BURST_SIZE / 2**20} MB = {READ_BURST_SIZE / 2**30} GB")
     return READ_BURST_NUM_RECORDS
@@ -224,7 +242,7 @@ def err (d):
 
 labels = ["Isolation"]
 for rad in RADS:
-    labels.append(f"FairDB {rad} RAD")
+    labels.append(f"FairDB {rad//10**6} RAD")
 labels[-1] = 'Pooled (FairDB Infinite RAD)'
 
 plot_data(labels=[''],

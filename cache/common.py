@@ -155,7 +155,7 @@ def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label, warmup=
     fig.set_size_inches(12, 6)
     plt.savefig(dest)
 
-def plot_field (df, x_label, s_label, dest, colors, FIELD = "99p", warmup=0):
+def plot_field (df, x_label, s_label, dest, colors, FIELD = "99p", warmup=0, ROLLING_WINDOW=ROLLING_WINDOW):
     ys = []
     for client_id in sorted(df["client_id"].unique()):
         y = df[df["client_id"] == client_id][["timestamp", FIELD]].set_index("timestamp").rolling(window=ROLLING_WINDOW).mean()[FIELD]
@@ -250,8 +250,9 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
             multi_reads = single_run[single_run["op_type"] == "MULTI_READ"]
             if not multi_reads.empty and sindex != len(series_labels) - 1:
                 multi_get_data_rad.append(rads[sindex] / 10**6)
-                multi_get_data_latency.append(multi_reads["avg"].mean() / 10 ** 3)
-                multi_get_data_variances.append(multi_reads["avg"].std())
+                avgs = multi_reads["avg"] / 10 ** 3
+                multi_get_data_latency.append(avgs.mean())
+                multi_get_data_variances.append(avgs.std())
             single_run = single_run[single_run["op_type"] == "READ"]
 
             s = series_labels[sindex]
@@ -260,6 +261,7 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
             plot_cache_allocs(single_run, labels[ri], s, dest)
             plot_hit_rate(single_run, labels[ri], s, dest, colors)
             plot_field(single_run, labels[ri], s, dest, colors, "99p", warmup_seconds)
+            plot_field(single_run, labels[ri], s, dest, colors, "avg", warmup_seconds, ROLLING_WINDOW=10)
             plot_throughput(single_run, labels[ri], s, dest, colors, warmup_seconds)
             # plot_field(run[sindex], labels[ri], s, dest, colors, "user_cache_usage")
             seriess[s].append(val)
@@ -287,7 +289,9 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
     if multi_get_data_rad != []:
         fig, ax = plt.subplots()
         df = pd.DataFrame({"Avg Latency": multi_get_data_latency, "Std": multi_get_data_variances}, index=multi_get_data_rad)
-        ax.scatter(multi_get_data_rad, multi_get_data_latency)
+        print("MultiGet data", df)
+        #ax.scatter(multi_get_data_rad, multi_get_data_latency)
+        ax.errorbar(multi_get_data_rad, multi_get_data_latency, yerr=multi_get_data_variances, fmt='o')
 
         line = [0] + multi_get_data_rad
         ax.plot(line, line, color='red', linestyle='-', label="RAD Guarantee")
