@@ -34,24 +34,25 @@ BAD_NUM = NUM - STEADY_NUM - RAMP_UP_NUM  # 2
 
 # We target a read io throughput, base the bad clients' target rate based on that
 # Other clients' rates will be scaled accordingly so throughput is at TARGET_BANDWIDTH
-TARGET_BANDWIDTH = (6000 * 2 ** 20) // 16
+REAL_IO_BANDWIDTH = 6000 * 2 ** 20
+TARGET_BANDWIDTH = REAL_IO_BANDWIDTH // 16
 TARGET_RATE = int((TARGET_BANDWIDTH / RECORD_SIZE) / 2.405) # Bad clents' only (~2.405x for total)
 
 NUM_TPOOL_THREADS = 360
 NUM_RECORDS_PER_SHARD = 256
 
-RADS = [0, 2 * 10**6, 5 * 10**6, 10 * 10**6, 500 * 10**6]
+RADS = [math.ceil(10**6* ratio * CACHE_SIZE / (TARGET_BANDWIDTH / NUM)) for ratio in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
+WARMUP_SECONDS = int(BAD_WORKING_SET_SIZE/TARGET_RATE)
 
 if MULTI_RUN:
-    NUM_READ_BURST_CYCLES = 10
+    NUM_READ_BURST_CYCLES = 10 if not SMALL_RUN else 3
     RAMP_START = 0
     RAMP_DURATION = 0
     BAD_RAMP_START = 0
     BAD_RAMP_DURATION = 0
     OPERATION_TIME = 300 if not SMALL_RUN else 60
-    RADS = [i * 10 ** 6 for i in range(11)]
 
-    # 12 mins (warmup) * 6 + 2 * 5 mins + 4 * 50 mins =  282 mins ~ 4-5 hrs
+    # 12 mins (warmup) * 7 + 2 * 5 mins + 5 * 50 mins =  6 hrs
 
 elif RAMP_DOWN:
     NUM_READ_BURST_CYCLES = 0
@@ -59,7 +60,7 @@ elif RAMP_DOWN:
     RAMP_DURATION = 0 # FRACTION OUT OF 120, not time
     BAD_RAMP_START = 6
     BAD_RAMP_DURATION = 120-BAD_RAMP_START
-    OPERATION_TIME = 3600 if not SMALL_RUN else 900
+    OPERATION_TIME = 1200 if not SMALL_RUN else 900
 
     # 12 mins (warmup) * 6 + 6 * 60 mins =  432 mins ~ 7-8 hrs
 
@@ -69,15 +70,15 @@ else: # stable
     RAMP_DURATION = 0 # FRACTION OUT OF 120, not time
     BAD_RAMP_START = 0
     BAD_RAMP_DURATION = 0
-    OPERATION_TIME = 1200 if not SMALL_RUN else 300
+    STEADY_NUM = 14
+    RAMP_UP_NUM = 0
+    RADS = [RADS[0]] + RADS[2:]
+    OPERATION_TIME = 600 if not SMALL_RUN else 40
+    WARMUP_SECONDS += 30 if not SMALL_RUN else 10
 
-    # 12 mins (warmup) * 6 + 20 * 6 = 192 mins ~ 3-4 hrs
-
-if SMALL_RUN:
-    RADS = [rad // SMALL_SCALE_FACTOR for rad in RADS]
+    # 12 mins (warmup) * 6 + 10 * 6 = 2.5 hrs
 
 MILLISECOND_INTERVAL = get_args(1)["status.interval_ms"] # use default interval
-WARMUP_SECONDS = int(BAD_WORKING_SET_SIZE/TARGET_RATE)
 COOLDOWN_SECONDS = 2
 
 USE_CACHED = "cached" in sys.argv[1]
@@ -102,17 +103,17 @@ def get_read_burst_num_records (RAD):
     return READ_BURST_NUM_RECORDS
 
 
-def get_with_throughput (csv_path_or_df, rad):
+def get_with_throughput (csv_path_or_df, ramp_working_set_size):
     if isinstance(csv_path_or_df, str):
         df = pd.read_csv(csv_path_or_df)
     else: df = csv_path_or_df
     df["time_s"] = (df["timestamp"] - df["timestamp"].min()) / 1000
     def get_throughput_for_row (r):
-        assert r["op_type"] in ["READ", "MULTI_READ", "READ_FAIL", "MULTI_READ_FAIL"]
+        assert r["op_type"] in ["READ", "MULTI_READ", "READ-FAILED", "MULTI_READ-FAILED"]
         if r["op_type"] == "READ":
             return RECORD_SIZE * r["count"]
         if r["op_type"] == "MULTI_READ":
-            return RECORD_SIZE * r["count"] * get_read_burst_num_records(rad)
+            return RECORD_SIZE * r["count"] * ramp_working_set_size
     df["throughput"] = df.apply(get_throughput_for_row, axis=1)
     return df
 
@@ -122,7 +123,7 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
     fairdb_path = lambda rad: f"{OUTPUT_FOLDER}/fairdb_{rad}_{title}.csv"
 
     if USE_CACHED:
-        return [get_with_throughput(isolation_path,0), *[get_with_throughput(fairdb_path(r),r) for r in RADS]]
+        return [get_with_throughput(isolation_path,ramp_working_set_size), *[get_with_throughput(fairdb_path(r),ramp_working_set_size) for r in RADS]]
 
     dump_args = {}
     args = get_args(NUM)
@@ -168,9 +169,9 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
     USE_CACHED_FOR_ZERO_RAD = False
 
     if USE_CACHED_FOR_ISOLATED:
-        isolation_data = get_with_throughput(isolation_path,0)
+        isolation_data = get_with_throughput(isolation_path,ramp_working_set_size)
     else:
-        isolation_data = get_with_throughput(do_run(args),0)
+        isolation_data = get_with_throughput(do_run(args),ramp_working_set_size)
         isolation_data.to_csv(isolation_path)
 
     print(f"""
@@ -186,15 +187,15 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
     for rad in RADS:
         args["num_read_burst_cycles"] = [NUM_READ_BURST_CYCLES if rad > 0 else 0] * NUM
         args["fairdb_cache_rad"] = rad
-        args["read_burst_num_records"] = [0] * STEADY_NUM + [get_read_burst_num_records(rad)] * RAMP_UP_NUM + [0] * BAD_NUM
+        args["read_burst_num_records"] = [0] * STEADY_NUM + [ramp_working_set_size] * RAMP_UP_NUM + [0] * BAD_NUM
         dump_args[f"fairdb_{rad}_rad"] = {**args}
-        if rad == 0 and USE_CACHED_FOR_ZERO_RAD: datas.append(get_with_throughput(fairdb_path(rad),rad))
+        if rad == 0 and USE_CACHED_FOR_ZERO_RAD: datas.append(get_with_throughput(fairdb_path(rad),ramp_working_set_size))
         else:
-            datas.append(get_with_throughput(do_run(args), rad))
+            datas.append(get_with_throughput(do_run(args), ramp_working_set_size))
             datas[-1].to_csv(fairdb_path(rad))
 
         print(f"""
-    FAIRDB RAD {rad//10**6} SECONDS {filterer(datas[-1]).mean()}
+    FAIRDB RAD {rad//10**3} ms {filterer(datas[-1]).mean()}
     {datas[-1]}
 """)
     
@@ -230,20 +231,17 @@ Target Rates:
 """
 print(config)
 
-def f(d):
-    df = d[(d['client_id'].isin([1])) & (d["op_type"] == "READ")]
+def f(i,d):
+    df = d[(d['client_id'].isin([i])) & (d["op_type"] == "READ")]
     max_time = df["time_s"].max()
-    return remove_outliers(df[(df["time_s"] > WARMUP_SECONDS) & (df["time_s"] < max_time - COOLDOWN_SECONDS)]["avg"]).mean()
-
-def err (d):
-    df = d[(d['client_id'].isin([1])) & (d["op_type"] == "READ")]
-    max_time = df["time_s"].max()
-    return remove_outliers(df[(df["time_s"] > WARMUP_SECONDS) & (df["time_s"] < max_time - COOLDOWN_SECONDS)]["avg"]).std()
+    d = df[(df["time_s"] > WARMUP_SECONDS) & (df["time_s"] < max_time - COOLDOWN_SECONDS)]
+    print(d)
+    return d
 
 labels = ["Isolation"]
 for rad in RADS:
-    labels.append(f"FairDB {rad//10**6} RAD")
-labels[-1] = 'Pooled (FairDB Infinite RAD)'
+    labels.append(f"{rad//10**3} ms RAD")
+labels[-1] = 'Pooled'
 
 plot_data(labels=[''],
     series_labels=labels,
@@ -251,14 +249,16 @@ plot_data(labels=[''],
         do (slightly_under_half, slightly_under_fair, BAD_WORKING_SET_SIZE, NUM, load=not NO_LOAD_RUN)
     ],
     f=f, #lambda d: filterer(d).mean(),
-    err_f= err, #lambda d: filterer(d).std(),
     x_label="Working set of the Steady-Ramp client",
     y_label="Average (Mean) Latency",
     title=f'Steady clients\' latencies (when {STEADY_NUM} Steady vs {RAMP_UP_NUM} Ramp vs {BAD_NUM} bad)',
     dest=f"{OUTPUT_FOLDER}/num_{NUM}_cachesize_{CACHE_SIZE//(2**30)}_time_{OPERATION_TIME}.png",
     colors=["grey"] * STEADY_NUM + ["blue"] * RAMP_UP_NUM + ["red"] * BAD_NUM,
-    rads = [0] + RADS)
+    rads = [0] + RADS, warmup_seconds=WARMUP_SECONDS)
 
+if len(sys.argv) > 2:
+    arch_path = f"./res_archives/{sys.argv[2]}/{sys.argv[1]}"
+    os.system(f"mkdir -p {arch_path}; mv {OUTPUT_FOLDER}/* {arch_path}")
 
 # plot_data(labels=['Very small','Slightly under 1/2', 'Slightly under fair', 'Slightly Above fair'],
 #     series_labels=['Isolation', 'Pooled (FairDB Infinite RAD)', 'FairDB 5000000 RAD', 'FairDB 0 RAD'],

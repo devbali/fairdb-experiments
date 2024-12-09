@@ -55,7 +55,6 @@ def get_args(num_clients):
         "rocksdb.use_direct_reads": True,
         "readallfields": True,
 
-
         "fairdb_use_pooled": False,
         "fairdb_cache_rad": 100,
         "cache_num_shard_bits": -1,
@@ -149,7 +148,6 @@ def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label, warmup=
 
     ax.set_xlabel('Time (s)')
     ax.set_ylabel(y_label)
-    ax.set_title(f"Cache in {x_label} {s_label}")
 
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
     fig.set_size_inches(12, 6)
@@ -199,7 +197,7 @@ def plot_cache_allocs(df, x_label, s_label, dest):
     fig.set_size_inches(12, 6)
     plt.savefig(real_dest)
 
-def plot_hit_rate (df, x_label, s_label, dest, colors):
+def plot_hit_rate (df, x_label, s_label, dest, colors, warmup=0):
     FIELDS = ["user_cache_hits", "user_cache_misses"]
     if df.iloc[-1][FIELDS[0]] == 0:
         FIELDS = ["global_cache_hits", "global_cache_misses"]
@@ -216,7 +214,7 @@ def plot_hit_rate (df, x_label, s_label, dest, colors):
         ys.append(cumulative_arrays.set_index("timestamp").apply(lambda r: 100 * r[FIELDS[0]] / (r[FIELDS[0]] + r[FIELDS[1]]), axis=1))
 
     time_series_line_graph(ys, x_label, s_label, 
-        dest.replace(".png", f"hit_rate_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Hit Rate (%)')
+        dest.replace(".png", f"hit_rate_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Hit Rate (%)', warmup=warmup)
 
 def plot_throughput (df, x_label, s_label, dest, colors, warmup):
     ys = []
@@ -229,7 +227,19 @@ def plot_throughput (df, x_label, s_label, dest, colors, warmup):
     time_series_line_graph(ys, x_label, s_label,
         dest.replace(".png", f"throughput_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Throughput in MB/s', warmup=warmup)
 
-def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d['std'].mean(),
+def get_hit_rate_to_single_run (df):
+    FIELDS = ["user_cache_hits", "user_cache_misses"]
+    if df.iloc[-1][FIELDS[0]] == 0:
+        FIELDS = ["global_cache_hits", "global_cache_misses"]
+    if df.iloc[-1][FIELDS[0]] == 0:
+        return
+    cum_arr_dict = {"timestamp": df["timestamp"]}
+    for f in FIELDS:
+        cum_arr_dict[f] = np.diff(df[f], prepend=0)
+    cumulative_arrays = pd.DataFrame(cum_arr_dict)
+    return cumulative_arrays.apply(lambda r: 100 * r[FIELDS[0]] / (r[FIELDS[0]] + r[FIELDS[1]]), axis=1)
+
+def plot_data(labels=[], data=[], f=lambda d,i: d,
     series_labels=['Isolation', 'Pooled'],
     x_label="Config",
     y_label="Average (Mean) Latency",
@@ -239,6 +249,10 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
     
     seriess = {s: [] for s in series_labels}
     errors = {s: [] for s in series_labels}
+
+    bad_seriess = {s: [] for s in series_labels}
+    bad_errors = {s: [] for s in series_labels}
+
     multi_get_data_latency = []
     multi_get_data_rad = []
     multi_get_data_variances = []
@@ -248,7 +262,7 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
         for sindex in range(len(series_labels)):
             single_run = run[sindex]
             multi_reads = single_run[single_run["op_type"] == "MULTI_READ"]
-            if not multi_reads.empty and sindex != len(series_labels) - 1:
+            if not multi_reads.empty:
                 multi_get_data_rad.append(rads[sindex] / 10**6)
                 avgs = multi_reads["avg"] / 10 ** 3
                 multi_get_data_latency.append(avgs.mean())
@@ -256,35 +270,53 @@ def plot_data(labels=[], data=[], f=lambda d: d['avg'].mean(), err_f=lambda d: d
             single_run = single_run[single_run["op_type"] == "READ"]
 
             s = series_labels[sindex]
-            val = f(single_run)
-            print("val for single run:", val)
+            # print(table)
             plot_cache_allocs(single_run, labels[ri], s, dest)
-            plot_hit_rate(single_run, labels[ri], s, dest, colors)
+            plot_hit_rate(single_run, labels[ri], s, dest, colors, warmup_seconds)
             plot_field(single_run, labels[ri], s, dest, colors, "99p", warmup_seconds)
             plot_field(single_run, labels[ri], s, dest, colors, "avg", warmup_seconds, ROLLING_WINDOW=10)
             plot_throughput(single_run, labels[ri], s, dest, colors, warmup_seconds)
             # plot_field(run[sindex], labels[ri], s, dest, colors, "user_cache_usage")
-            seriess[s].append(val)
-            errors[s].append(err_f(single_run))
+            
+            def do (i, seriess, errors):
+                table = f(i,single_run)
+
+                hit_rate_series = get_hit_rate_to_single_run(table)
+                avg = remove_outliers(table["avg"])
+                p99 = remove_outliers(table["99p"])
+
+                seriess[s].append((avg.mean(), p99.mean(), remove_outliers(hit_rate_series).mean() if hit_rate_series is not None else 0))
+                errors[s].append((avg.std(), p99.std(), remove_outliers(hit_rate_series).std() if hit_rate_series is not None else 0))
+
+            do (1, seriess, errors)
+            do (15, bad_seriess, bad_errors)
 
     x = np.arange(len(labels))
 
     width = 0.35
-    fig, ax = plt.subplots()
+    y_labels = ["Average (Mean) Latency (ms)", "Tail (p99) Latency (ms)", "Hit Rate (%)"]
+    for seriess, errors in [(seriess, errors), (bad_seriess, bad_errors)]:
+        fig, axes = plt.subplots(1,3, figsize=(15,5))
 
-    for sindex in range(len(series_labels)):
-        s = series_labels[sindex]
-        ax.bar(x - (width/2)/len(series_labels) + (width*sindex/len(series_labels)), seriess[s], width/len(series_labels), label=s, yerr=errors[s])
+        for ax_i in range(len(axes)):
+            ax = axes[ax_i]
+            x_coordinates = []
+            for sindex in range(len(series_labels)):
+                s = series_labels[sindex]
+                x_coordinate = x - (width/2)/len(series_labels) + (width*sindex/len(series_labels))
+                ax.bar(x_coordinate, [a[ax_i] for a in seriess[s]], width/len(series_labels), label=s, yerr=  [a[ax_i] for a in errors[s]])
+                x_coordinates.append(list(x_coordinate)[0])
 
-    ax.set_xlabel(x_label)
-    ax.set_ylabel(y_label)
-    ax.set_title(title)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels)
-    ax.legend()
+            ax.set_xticks(x_coordinates)
+            ax.set_xticklabels(series_labels, rotation=45, ha='right')
+            ax.set_ylabel(y_labels[ax_i])
+            ax.set_title(y_labels[ax_i])
 
-    # Display the plot
-    plt.savefig(dest)
+        # Display the plot
+        plt.tight_layout()
+        plt.subplots_adjust(bottom=0.2, top=0.85)
+        fig.legend(series_labels, loc='upper center', ncol=len(series_labels))
+        plt.savefig( dest.replace(".png", ("_bad.png" if seriess is bad_seriess else "")))
 
     if multi_get_data_rad != []:
         fig, ax = plt.subplots()
