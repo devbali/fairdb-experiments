@@ -8,7 +8,9 @@ except ModuleNotFoundError:
 remove_outliers = lambda d: d[np.abs((d - d.mean()) / d.std()) < 5]
 #remove_outliers = lambda d: d[d < d.quantile(0.98)]
 filterer = lambda d: remove_outliers(d[d['client_id'] == 0].iloc[20:-5]['avg'])
-DATA_DIR = "/mnt/rocksdb/ycsb-rocksdb-data"
+
+DATA_DIR = "/mnt/rocksdb/ycsb-rocksdb-data" # 4kb records
+#DATA_DIR = "/mnt/rocksdb/rocksdb2/ycsb-rocksdb-data"
 
 def get_args(num_clients):
     return {
@@ -20,11 +22,11 @@ def get_args(num_clients):
         "target_rates": [10000] * num_clients, # 10k requests a second
         "rocksdb.cache_size": [1024*1024 * 40] * num_clients,
 
-        "rate_limits": [500] * num_clients,
-        "read_rate_limits": [1000] * num_clients,
+        "rate_limits": "", # [0] * num_clients,
+        "read_rate_limits": "", # [0] * num_clients,
         "io_read_capacity_kbps": 6000 * 1024,
 
-        "rsched": True,
+        "rsched": False,
         "refill_period": 5,
         "rsched_interval_ms": 50,
         "lookback_intervals": 30,
@@ -41,8 +43,8 @@ def get_args(num_clients):
         "client_to_cf_map": ["default"] + [f"cf{i}" for i in range(1, num_clients)],
         "client_to_cf_offset": [0] * num_clients,
 
-        "rocksdb.disable_auto_compactions": True,
-        "rocksdb.compression_per_level": ['kSnappyCompression']* num_clients,
+        "rocksdb.disable_auto_compactions": False,
+        "rocksdb.compression_per_level": ['kNoCompression']* num_clients,
         "rocksdb.max_write_buffer_number": [20] * num_clients,
         "rocksdb.min_write_buffer_number_to_merge": [1] * num_clients,
         "rocksdb.write_buffer_size": [67108864] * num_clients,
@@ -55,14 +57,20 @@ def get_args(num_clients):
         "rocksdb.use_direct_reads": True,
         "readallfields": True,
 
-        "fairdb_use_pooled": False,
-        "fairdb_cache_rad": 100,
         "cache_num_shard_bits": -1,
         "ramp_duration": [0] * num_clients,
         "ramp_start": [0] * num_clients,
         "forced_warmup": False,
         "num_read_burst_cycles": [0] * num_clients,
-        "read_burst_num_records": [0] * num_clients
+        "read_burst_num_records": [0] * num_clients,
+        "read_burst_rr": [0]*num_clients,
+
+        "fairdb_use_pooled": False,
+        "fairdb_cache_rad": 100,
+        "fairdb_cache_read_io_mbps": 375,
+        "fairdb_cache_additional_rampups_supported": 2,
+        "fairdb_cache_max_request_rate": 10000,
+        "fairdb_cache_record_size": 4 * 1024
     }
 
 import os
@@ -140,6 +148,8 @@ def transform_timestamp_series (s):
 ROLLING_WINDOW = 5
 def time_series_line_graph (ys, x_label, s_label, dest, colors, y_label, warmup=0):
     fig, ax = plt.subplots()
+    ys.append(sum(ys))
+    colors.append("black")
     for i in range(len(ys)):
         y = pd.DataFrame({"y":list(ys[i])}, ys[i].index).reset_index()
         y["time_s"] = transform_timestamp_series(ys[i].index)
@@ -225,7 +235,7 @@ def plot_throughput (df, x_label, s_label, dest, colors, warmup):
         ys.append(client_df.set_index("timestamp")["throughput"])
 
     time_series_line_graph(ys, x_label, s_label,
-        dest.replace(".png", f"throughput_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Throughput in MB/s', warmup=warmup)
+        dest.replace(".png", f"throughput_{s_label.replace('/','-')}_{x_label.replace('/','-')}.png"), colors, 'Throughput in MB/s', warmup=0)
 
 def get_hit_rate_to_single_run (df):
     FIELDS = ["user_cache_hits", "user_cache_misses"]
@@ -267,7 +277,9 @@ def plot_data(labels=[], data=[], f=lambda d,i: d,
                 avgs = multi_reads["avg"] / 10 ** 3
                 multi_get_data_latency.append(avgs.mean())
                 multi_get_data_variances.append(avgs.std())
-            single_run = single_run[single_run["op_type"] == "READ"]
+
+            e2e_single_run = single_run[single_run["e2e"] == True]
+            single_run = single_run[(single_run["op_type"] == "READ") & (single_run["e2e"] == False)]
 
             s = series_labels[sindex]
             # print(table)
@@ -275,18 +287,21 @@ def plot_data(labels=[], data=[], f=lambda d,i: d,
             plot_hit_rate(single_run, labels[ri], s, dest, colors, warmup_seconds)
             plot_field(single_run, labels[ri], s, dest, colors, "99p", warmup_seconds)
             plot_field(single_run, labels[ri], s, dest, colors, "avg", warmup_seconds, ROLLING_WINDOW=10)
+            print("E2E single run", e2e_single_run)
+            plot_field(e2e_single_run, labels[ri], s, dest.replace(".png", "_e2e.png"), colors, "99p", warmup_seconds)
+            plot_field(e2e_single_run, labels[ri], s, dest.replace(".png", "_e2e.png"), colors, "avg", warmup_seconds, ROLLING_WINDOW=10)
             plot_throughput(single_run, labels[ri], s, dest, colors, warmup_seconds)
             # plot_field(run[sindex], labels[ri], s, dest, colors, "user_cache_usage")
-            
+
             def do (i, seriess, errors):
                 table = f(i,single_run)
 
                 hit_rate_series = get_hit_rate_to_single_run(table)
-                avg = remove_outliers(table["avg"])
-                p99 = remove_outliers(table["99p"])
+                avg = table["avg"]
+                p99 = table["99p"]
 
-                seriess[s].append((avg.mean(), p99.mean(), remove_outliers(hit_rate_series).mean() if hit_rate_series is not None else 0))
-                errors[s].append((avg.std(), p99.std(), remove_outliers(hit_rate_series).std() if hit_rate_series is not None else 0))
+                seriess[s].append((avg.mean(), p99.mean(), hit_rate_series.mean() if hit_rate_series is not None else 0))
+                errors[s].append((avg.std(), p99.std(), hit_rate_series.std() if hit_rate_series is not None else 0))
 
             do (1, seriess, errors)
             do (15, bad_seriess, bad_errors)

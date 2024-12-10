@@ -7,6 +7,7 @@ import sys
 
 # 4 kb records
 RECORD_SIZE = 4 * 2 ** 10
+# RECORD_SIZE = 2 ** 10
 
 SMALL_RUN = "small" in sys.argv[1]
 DISTRIBUTION = "zipfian" if "zipfian" in sys.argv[1] else "uniform"
@@ -34,23 +35,31 @@ BAD_NUM = NUM - STEADY_NUM - RAMP_UP_NUM  # 2
 
 # We target a read io throughput, base the bad clients' target rate based on that
 # Other clients' rates will be scaled accordingly so throughput is at TARGET_BANDWIDTH
-REAL_IO_BANDWIDTH = 6000 * 2 ** 20
-TARGET_BANDWIDTH = REAL_IO_BANDWIDTH // 16
-TARGET_RATE = int((TARGET_BANDWIDTH / RECORD_SIZE) / 2.405) # Bad clents' only (~2.405x for total)
+REAL_IO_BANDWIDTH = 12000 * 2 ** 20
+READ_AMPLIFICATION_FACTOR = 1
+TARGET_BANDWIDTH = REAL_IO_BANDWIDTH // READ_AMPLIFICATION_FACTOR
+TARGET_RATE = int((TARGET_BANDWIDTH / RECORD_SIZE))# 2.32) # based on 12-2-2
 
 NUM_TPOOL_THREADS = 360
 NUM_RECORDS_PER_SHARD = 256
 
-RADS = [math.ceil(10**6* ratio * CACHE_SIZE / (TARGET_BANDWIDTH / NUM)) for ratio in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
+RADS = [0, 50000, 200000, 500000, 1000000] # 0, 50ms, 200ms, 500ms, 1s
+
 WARMUP_SECONDS = int(BAD_WORKING_SET_SIZE/TARGET_RATE)
+BURST_SECONDS = 5
+BURST_RR = TARGET_RATE
+
+FAIRCACHE_READIO_MBPS = TARGET_BANDWIDTH // (2**20)
+FAIRCACHE_ADDITIONAL_RAMPUPS_SUPPORTED = 2
+FAIRCACHE_MAX_REQUEST_RATE = BURST_RR
 
 if MULTI_RUN:
-    NUM_READ_BURST_CYCLES = 10 if not SMALL_RUN else 3
+    NUM_READ_BURST_CYCLES = 10 if not SMALL_RUN else 5
     RAMP_START = 0
     RAMP_DURATION = 0
     BAD_RAMP_START = 0
     BAD_RAMP_DURATION = 0
-    OPERATION_TIME = 300 if not SMALL_RUN else 60
+    OPERATION_TIME = 300 if not SMALL_RUN else 30
 
     # 12 mins (warmup) * 7 + 2 * 5 mins + 5 * 50 mins =  6 hrs
 
@@ -70,11 +79,17 @@ else: # stable
     RAMP_DURATION = 0 # FRACTION OUT OF 120, not time
     BAD_RAMP_START = 0
     BAD_RAMP_DURATION = 0
-    STEADY_NUM = 14
-    RAMP_UP_NUM = 0
-    RADS = [RADS[0]] + RADS[2:]
-    OPERATION_TIME = 600 if not SMALL_RUN else 40
-    WARMUP_SECONDS += 30 if not SMALL_RUN else 10
+
+    RADS = RADS if not SMALL_RUN else [] # [RADS[0], RADS[2], RADS[-1]]
+    OPERATION_TIME = 600 if not SMALL_RUN else 10
+    WARMUP_SECONDS += 30 if not SMALL_RUN else 5
+    if SMALL_RUN:
+        WARMUP_SECONDS = 0
+        STEADY_NUM = 0
+        RAMP_UP_NUM = 0
+        BAD_NUM = 16
+        NUM = 16
+        OPERATION_TIME = 30
 
     # 12 mins (warmup) * 6 + 10 * 6 = 2.5 hrs
 
@@ -94,14 +109,6 @@ FIELD_NUM = 16
 FIELD_LENGTH = RECORD_SIZE // FIELD_NUM # 8kb records
 
 get_target_rate = lambda s, bws=BAD_WORKING_SET_SIZE: max(20, int(TARGET_RATE*s/bws))
-
-def get_read_burst_num_records (RAD):
-    TOTAL_THROUGHPUT = 348 # 6000 # in mb/s
-    READ_BURST_SIZE = (RAD/10**6) * (TOTAL_THROUGHPUT * 2**20 / NUM)
-    READ_BURST_NUM_RECORDS = int(READ_BURST_SIZE // RECORD_SIZE)
-    print(f"RAD {RAD/10**6} seconds. READ BURST NUM RECORDS: {READ_BURST_NUM_RECORDS}. Size: {READ_BURST_SIZE / 2**20} MB = {READ_BURST_SIZE / 2**30} GB")
-    return READ_BURST_NUM_RECORDS
-
 
 def get_with_throughput (csv_path_or_df, ramp_working_set_size):
     if isinstance(csv_path_or_df, str):
@@ -139,8 +146,13 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
     args["fieldlength"] = FIELD_LENGTH
     args["recordcount"] = [bad_working_set_size] * NUM
     args["requestdistribution"] = [DISTRIBUTION] * NUM
-    args["forced_warmup"] = True
+    args["forced_warmup"] = False
     args["tpool_threads"] = NUM_TPOOL_THREADS
+
+    args["fairdb_cache_read_io_mbps"] = FAIRCACHE_READIO_MBPS
+    args["fairdb_cache_additional_rampups_supported"] = FAIRCACHE_ADDITIONAL_RAMPUPS_SUPPORTED
+    args["fairdb_cache_max_request_rate"] = FAIRCACHE_MAX_REQUEST_RATE
+    args["fairdb_cache_record_size"] = RECORD_SIZE
 
     dump_args["load"] = {**args}
     if load: do_load(args, NUM)
@@ -185,9 +197,13 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
 
     datas = []
     for rad in RADS:
-        args["num_read_burst_cycles"] = [NUM_READ_BURST_CYCLES if rad > 0 else 0] * NUM
+        if NUM_READ_BURST_CYCLES > 0:
+            args["num_read_burst_cycles"] = [NUM_READ_BURST_CYCLES if rad > 0 else 0] * NUM
+            args["read_burst_num_records"] = [0] * STEADY_NUM + [ramp_working_set_size] * RAMP_UP_NUM + [0] * BAD_NUM
+
         args["fairdb_cache_rad"] = rad
-        args["read_burst_num_records"] = [0] * STEADY_NUM + [ramp_working_set_size] * RAMP_UP_NUM + [0] * BAD_NUM
+        args["read_burst_rr"] = [BURST_RR] * NUM
+
         dump_args[f"fairdb_{rad}_rad"] = {**args}
         if rad == 0 and USE_CACHED_FOR_ZERO_RAD: datas.append(get_with_throughput(fairdb_path(rad),ramp_working_set_size))
         else:
@@ -215,7 +231,7 @@ config = f"""
 Cache size fair share in GB: {CACHE_SIZE/(2**30) : .4} (Total {NUM*CACHE_SIZE/(2**30) : .4})
 Dataset size per client in GB: {BAD_WORKING_SET_SIZE*RECORD_SIZE/(2**30) : .4} (Total {NUM*BAD_WORKING_SET_SIZE*RECORD_SIZE/(2**30) : .4})
 Pooled shard {CACHE_SHARD_BITS_POOLED} bits, {2**CACHE_SHARD_BITS_POOLED} shards total")
-If 16 Bad, Read io bandwidth is targetted at {TARGET_RATE*RECORD_SIZE / (2**20) : .9} MB/s
+Read io bandwidth is targetted at {TARGET_BANDWIDTH / (2**20) : .9} MB/s
 Records are {RECORD_SIZE//(2**10)} KB each
 Working set sizes:
     Bad: {BAD_WORKING_SET_SIZE}
@@ -235,7 +251,6 @@ def f(i,d):
     df = d[(d['client_id'].isin([i])) & (d["op_type"] == "READ")]
     max_time = df["time_s"].max()
     d = df[(df["time_s"] > WARMUP_SECONDS) & (df["time_s"] < max_time - COOLDOWN_SECONDS)]
-    print(d)
     return d
 
 labels = ["Isolation"]
