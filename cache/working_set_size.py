@@ -12,6 +12,7 @@ SMALL_RUN = "small" in sys.argv[1]
 DISTRIBUTION = "zipfian" if "zipfian" in sys.argv[1] else "uniform"
 MULTI_RUN = "multi" in sys.argv[1]
 RAMP_DOWN = "rampdown" in sys.argv[1]
+HIT = "hit" in sys.argv[1]
 
 SMALL_SCALE_FACTOR = 16
 
@@ -35,22 +36,32 @@ BAD_NUM = NUM - STEADY_NUM - RAMP_UP_NUM  # 2
 # We target a read io throughput, base the bad clients' target rate based on that
 # Other clients' rates will be scaled accordingly so throughput is at TARGET_BANDWIDTH
 REAL_IO_BANDWIDTH = 6000 * 2 ** 20
-TARGET_BANDWIDTH = REAL_IO_BANDWIDTH // 16
-TARGET_RATE = int((TARGET_BANDWIDTH / RECORD_SIZE) / 2.405) # Bad clents' only (~2.405x for total)
+MULTIPLIER = (1/64) if MULTI_RUN else (1/64)
+TARGET_BANDWIDTH = int(REAL_IO_BANDWIDTH * MULTIPLIER)
+TARGET_RATE = int((TARGET_BANDWIDTH / RECORD_SIZE)) # Bad clents' only (~2.405x for total)
 
-NUM_TPOOL_THREADS = 360
-NUM_RECORDS_PER_SHARD = 256
+NUM_TPOOL_THREADS = 256
+NUM_RECORDS_PER_SHARD = 32
 
-RADS = [math.ceil(10**6* ratio * CACHE_SIZE / (TARGET_BANDWIDTH / NUM)) for ratio in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
+RADS = [math.ceil(10**6* ratio * CACHE_SIZE / (REAL_IO_BANDWIDTH / NUM)) for ratio in [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]]
 WARMUP_SECONDS = int(BAD_WORKING_SET_SIZE/TARGET_RATE)
+COOLDOWN_SECONDS = 2
 
 if MULTI_RUN:
-    NUM_READ_BURST_CYCLES = 10 if not SMALL_RUN else 3
+    NUM_READ_BURST_CYCLES = 10 if not SMALL_RUN else 10
     RAMP_START = 0
     RAMP_DURATION = 0
     BAD_RAMP_START = 0
     BAD_RAMP_DURATION = 0
-    OPERATION_TIME = 300 if not SMALL_RUN else 60
+
+    if HIT:
+        STEADY_NUM = 14
+        RAMP_UP_NUM = 2
+        BAD_NUM = 0
+
+    OPERATION_TIME = 300 if not SMALL_RUN else NUM_READ_BURST_CYCLES * 15
+    WARMUP_SECONDS += 10 if not SMALL_RUN else 5
+    COOLDOWN_SECONDS += 2
 
     # 12 mins (warmup) * 7 + 2 * 5 mins + 5 * 50 mins =  6 hrs
 
@@ -70,16 +81,13 @@ else: # stable
     RAMP_DURATION = 0 # FRACTION OUT OF 120, not time
     BAD_RAMP_START = 0
     BAD_RAMP_DURATION = 0
-    STEADY_NUM = 14
-    RAMP_UP_NUM = 0
-    RADS = [RADS[0]] + RADS[2:]
-    OPERATION_TIME = 600 if not SMALL_RUN else 40
+    RADS = RADS #[RADS[0]] + RADS[2:]
+    OPERATION_TIME = 600 if not SMALL_RUN else 90
     WARMUP_SECONDS += 30 if not SMALL_RUN else 10
 
     # 12 mins (warmup) * 6 + 10 * 6 = 2.5 hrs
 
 MILLISECOND_INTERVAL = get_args(1)["status.interval_ms"] # use default interval
-COOLDOWN_SECONDS = 2
 
 USE_CACHED = "cached" in sys.argv[1]
 NO_LOAD_RUN = True
@@ -137,18 +145,17 @@ def do (steady_working_set_size, ramp_working_set_size, bad_working_set_size, NU
     args["rocksdb.cache_size"] = [CACHE_SIZE] * NUM
     args["operationcount"] = sum([rate * OPERATION_TIME for rate in args["target_rates"]])
     args["fieldlength"] = FIELD_LENGTH
-    args["recordcount"] = [bad_working_set_size] * NUM
+    args["recordcount"] = (
+        [steady_working_set_size] * STEADY_NUM + 
+        [ramp_working_set_size] * RAMP_UP_NUM +
+        [bad_working_set_size] * BAD_NUM
+    )
     args["requestdistribution"] = [DISTRIBUTION] * NUM
     args["forced_warmup"] = True
     args["tpool_threads"] = NUM_TPOOL_THREADS
 
     dump_args["load"] = {**args}
     if load: do_load(args, NUM)
-    args["recordcount"] = (
-        [steady_working_set_size] * STEADY_NUM + 
-        [ramp_working_set_size] * RAMP_UP_NUM +
-        [bad_working_set_size] * BAD_NUM
-    )
     args["ramp_duration"] = (
         [0] * STEADY_NUM + 
         [RAMP_DURATION] * RAMP_UP_NUM +

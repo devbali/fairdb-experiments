@@ -8,7 +8,7 @@ except ModuleNotFoundError:
 remove_outliers = lambda d: d[np.abs((d - d.mean()) / d.std()) < 5]
 #remove_outliers = lambda d: d[d < d.quantile(0.98)]
 filterer = lambda d: remove_outliers(d[d['client_id'] == 0].iloc[20:-5]['avg'])
-DATA_DIR = "/mnt/rocksdb/ycsb-rocksdb-data"
+DATA_DIR = "/mnt/rocksdb/rocksdb3/ycsb-rocksdb-data"
 
 def get_args(num_clients):
     return {
@@ -20,11 +20,11 @@ def get_args(num_clients):
         "target_rates": [10000] * num_clients, # 10k requests a second
         "rocksdb.cache_size": [1024*1024 * 40] * num_clients,
 
-        "rate_limits": [500] * num_clients,
-        "read_rate_limits": [1000] * num_clients,
-        "io_read_capacity_kbps": 6000 * 1024,
+        "rate_limits": "", #[500] * num_clients,
+        "read_rate_limits": "", #[1000] * num_clients,
+        "io_read_capacity_kbps": 6400 * 1024,
 
-        "rsched": True,
+        "rsched": False,
         "refill_period": 5,
         "rsched_interval_ms": 50,
         "lookback_intervals": 30,
@@ -42,7 +42,7 @@ def get_args(num_clients):
         "client_to_cf_offset": [0] * num_clients,
 
         "rocksdb.disable_auto_compactions": True,
-        "rocksdb.compression_per_level": ['kSnappyCompression']* num_clients,
+        "rocksdb.compression_per_level": ['kNoCompression']* num_clients,
         "rocksdb.max_write_buffer_number": [20] * num_clients,
         "rocksdb.min_write_buffer_number_to_merge": [1] * num_clients,
         "rocksdb.write_buffer_size": [67108864] * num_clients,
@@ -105,6 +105,7 @@ def do_load (args, num_tables):
         """
         args_load = {**args}
         del args_load["target_rates"]
+        args_load["recordcount"] = args["recordcount"][i]
         args_load["fairdb_use_pooled"] = False
 
         run_cmd(add_args_to_cmd(cmd, args_load))
@@ -280,15 +281,15 @@ def plot_data(labels=[], data=[], f=lambda d,i: d,
             
             def do (i, seriess, errors):
                 table = f(i,single_run)
+                if len(table) > 0:
+                    hit_rate_series = get_hit_rate_to_single_run(table)
+                    avg = table["avg"]
+                    p99 = table["99p"]
 
-                hit_rate_series = get_hit_rate_to_single_run(table)
-                avg = remove_outliers(table["avg"])
-                p99 = remove_outliers(table["99p"])
+                    seriess[s].append((avg.mean(), p99.mean(), hit_rate_series.mean() if hit_rate_series is not None else 0))
+                    errors[s].append((avg.std(), p99.std(), hit_rate_series.std() if hit_rate_series is not None else 0))
 
-                seriess[s].append((avg.mean(), p99.mean(), remove_outliers(hit_rate_series).mean() if hit_rate_series is not None else 0))
-                errors[s].append((avg.std(), p99.std(), remove_outliers(hit_rate_series).std() if hit_rate_series is not None else 0))
-
-            do (1, seriess, errors)
+            do (13, seriess, errors)
             do (15, bad_seriess, bad_errors)
 
     x = np.arange(len(labels))
@@ -296,6 +297,7 @@ def plot_data(labels=[], data=[], f=lambda d,i: d,
     width = 0.35
     y_labels = ["Average (Mean) Latency (ms)", "Tail (p99) Latency (ms)", "Hit Rate (%)"]
     for seriess, errors in [(seriess, errors), (bad_seriess, bad_errors)]:
+        print("seriess",seriess)
         fig, axes = plt.subplots(1,3, figsize=(15,5))
 
         for ax_i in range(len(axes)):
@@ -321,9 +323,13 @@ def plot_data(labels=[], data=[], f=lambda d,i: d,
     if multi_get_data_rad != []:
         fig, ax = plt.subplots()
         df = pd.DataFrame({"Avg Latency": multi_get_data_latency, "Std": multi_get_data_variances}, index=multi_get_data_rad)
+        df.to_csv(dest.replace(".png", "_multiget.csv"))
+        if os.path.exists(dest.replace(".png", "_adjust.csv")):
+            adjustments = pd.read_csv(dest.replace(".png", "_adjust.csv"))
+            df["Avg Latency"] = df["Avg Latency"] - adjustments["Avg Latency"]
         print("MultiGet data", df)
         #ax.scatter(multi_get_data_rad, multi_get_data_latency)
-        ax.errorbar(multi_get_data_rad, multi_get_data_latency, yerr=multi_get_data_variances, fmt='o')
+        ax.errorbar(multi_get_data_rad, df["Avg Latency"], yerr=multi_get_data_variances, fmt='o')
 
         line = [0] + multi_get_data_rad
         ax.plot(line, line, color='red', linestyle='-', label="RAD Guarantee")
