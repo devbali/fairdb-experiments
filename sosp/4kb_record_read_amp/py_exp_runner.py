@@ -107,9 +107,8 @@ def main():
   ############################ Parameters ######################################### 
     
   # Dataset Parameters -- should be set based on loaded data
-  # ./ycsb_loader.sh 8 64 1024 98304
-  fieldcount = "16"
-  RECORD_SIZE = 1024*64
+  fieldcount = "4"
+  RECORD_SIZE = 4*1024
   fieldlength = str(RECORD_SIZE // int(fieldcount))
   NUM_CFS = 8
   rocksdb_num_cfs = str(NUM_CFS)
