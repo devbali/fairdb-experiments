@@ -1,0 +1,2 @@
+python working_set_size.py zipfian-stable final_plots_night_dec_8
+python working_set_size.py zipfian-multi final_plots_night_dec_8
